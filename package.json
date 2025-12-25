@@ -1,0 +1,50 @@
+{
+  "private": true,
+  "type": "module",
+  "name": "claudegram-monorepo",
+  "description": "Bidirectional bridge between Claude Code and Telegram. Monorepo.",
+  "repository": "https://github.com/jkomyno/claudegram.git",
+  "author": {
+    "name": "Alberto Schiabel",
+    "email": "alberto.schiabel@gmail.com"
+  },
+  "license": "MIT",
+  "engines": {
+    "pnpm": ">=8"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "build:watch": "turbo run build:watch",
+    "check:exports": "turbo run check:exports",
+    "clean": "turbo run clean",
+    "lint:ci": "oxlint .",
+    "lint": "oxlint --fix .",
+    "test": "vitest --workspace ./vitest.workspace.ts run",
+    "test:unit": "vitest --workspace ./vitest.workspace.ts --project unit run",
+    "test:integration": "vitest --workspace ./vitest.workspace.ts --project integration run",
+    "prepare": "is-ci || husky"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.16.4",
+    "@types/node": "20.9.0",
+    "husky": "^9.1.7",
+    "is-ci": "^3.0.1",
+    "lint-staged": "^15.2.11",
+    "rimraf": "^6.0.1",
+    "taze": "^0.17.2",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8",
+    "oxlint": "1.35.0"
+  },
+  "pre-commit": "lint-staged",
+  "lint-staged": {
+    "*.{js,ts,cjs,mjs}": "oxlint"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  },
+  "packageManager": "pnpm@9.15.0"
+}
