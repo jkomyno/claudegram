@@ -1,0 +1,8 @@
+{
+  "session_id": "session-contract-1",
+  "transcript_path": "/tmp/claudegram-contract/transcript.jsonl",
+  "cwd": "/tmp/claudegram-contract",
+  "hook_event_name": "Notification",
+  "notification_type": "idle_prompt",
+  "message": "Claude is waiting for input"
+}
