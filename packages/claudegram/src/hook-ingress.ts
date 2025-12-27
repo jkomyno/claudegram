@@ -12,6 +12,8 @@ import {
   type HookEnvelope,
   type HookRejection,
   type HookResponse,
+  encodeHookEnvelope,
+  encodeHookResponse,
   parseHookEnvelope,
   parseHookResponse,
 } from './protocol'
@@ -30,7 +32,7 @@ export interface RunningHookIngress {
 }
 
 const encodeResponse = (response: HookResponse): string =>
-  `${JSON.stringify(response)}\n`
+  `${encodeHookResponse(response)}\n`
 
 const rejection = (message: string): HookRejection => ({
   type: 'error',
@@ -233,7 +235,7 @@ export const sendHookEnvelope = (
 
         socket.setEncoding('utf8')
         socket.once('connect', () => {
-          socket.write(`${JSON.stringify(envelope)}\n`)
+          socket.write(`${encodeHookEnvelope(envelope)}\n`)
         })
         socket.on('data', (chunk: string) => {
           buffer += chunk
