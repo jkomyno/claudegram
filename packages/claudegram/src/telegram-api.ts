@@ -74,6 +74,7 @@ export interface SendMessageOptions {
 }
 
 export interface TelegramApiService {
+  readonly getMe: () => Effect.Effect<TelegramBot, TelegramApiError>
   readonly getUpdates: (
     options?: GetUpdatesOptions,
   ) => Effect.Effect<ReadonlyArray<TelegramUpdate>, TelegramApiError>
@@ -93,6 +94,15 @@ export interface TelegramApiService {
     text?: string,
   ) => Effect.Effect<void, TelegramApiError>
 }
+
+export const TelegramBotSchema = Schema.Struct({
+  id: Schema.Number,
+  is_bot: Schema.Boolean,
+  first_name: Schema.String,
+  username: Schema.optional(Schema.String),
+})
+
+export type TelegramBot = typeof TelegramBotSchema.Type
 
 export class TelegramApi extends Context.Tag('@claudegram/TelegramApi')<
   TelegramApi,
@@ -170,6 +180,7 @@ export const makeTelegramApi = (
       )
 
     return TelegramApi.of({
+      getMe: () => call('getMe', {}, TelegramBotSchema),
       getUpdates: (pollOptions = {}) =>
         call(
           'getUpdates',

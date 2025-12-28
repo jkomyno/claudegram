@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { CLI_NAME } from '../../src/bin'
+import { CLI_NAME } from '../../src/constants'
 
 describe('scaffold', () => {
   it('names the CLI', () => {

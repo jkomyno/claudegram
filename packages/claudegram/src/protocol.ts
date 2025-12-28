@@ -62,6 +62,7 @@ export const HookResponseSchema = Schema.Union(
 export type HookResponse = typeof HookResponseSchema.Type
 
 const HookEnvelopeJsonSchema = Schema.parseJson(HookEnvelopeSchema)
+const HookEventJsonSchema = Schema.parseJson(HookEventSchema)
 const HookResponseJsonSchema = Schema.parseJson(HookResponseSchema)
 
 export class HookProtocolError extends Data.TaggedError('HookProtocolError')<{
@@ -95,6 +96,9 @@ const encode = <A, I>(
 
 export const parseHookEvent = (value: unknown): HookEvent =>
   decode(HookEventSchema, value, 'invalid hook event')
+
+export const parseHookEventJson = (json: string): HookEvent =>
+  decode(HookEventJsonSchema, json, 'invalid hook event JSON')
 
 export const makeHookEnvelope = (
   event: HookEvent,

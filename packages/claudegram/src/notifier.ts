@@ -273,6 +273,7 @@ export const makeNotifier = Effect.gen(function* () {
           Option.some({ text: '🧹 Claude is compacting this session.' }),
         )
       }
+      case 'PreToolUse':
       case 'PermissionRequest': {
         return permissionNotification(event, sessionId)
       }

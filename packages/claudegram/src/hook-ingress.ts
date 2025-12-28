@@ -31,6 +31,12 @@ export interface RunningHookIngress {
   readonly close: Effect.Effect<void, HookIngressError>
 }
 
+export interface HookIngressOptions {
+  readonly onEnvelope?: (
+    envelope: HookEnvelope,
+  ) => Effect.Effect<void, unknown>
+}
+
 const encodeResponse = (response: HookResponse): string =>
   `${encodeHookResponse(response)}\n`
 
@@ -146,6 +152,7 @@ const listen = (server: Server, socketPath: string): Promise<void> =>
 const handleConnection = (
   socket: Socket,
   record: (envelope: HookEnvelope) => Effect.Effect<unknown>,
+  onEnvelope?: HookIngressOptions['onEnvelope'],
 ): void => {
   let buffer = ''
   let handled = false
@@ -173,7 +180,11 @@ const handleConnection = (
 
     try {
       const envelope = parseHookEnvelope(line)
-      Effect.runPromise(record(envelope)).then(
+      const handle =
+        onEnvelope === undefined
+          ? record(envelope)
+          : record(envelope).pipe(Effect.andThen(onEnvelope(envelope)))
+      Effect.runPromise(handle).then(
         () => socket.end(encodeResponse(acknowledgement(envelope.event.session_id))),
         () => socket.end(encodeResponse(rejection('failed to record hook event'))),
       )
@@ -187,6 +198,7 @@ const handleConnection = (
 
 export const startHookIngress = (
   socketPath: string,
+  options: HookIngressOptions = {},
 ): Effect.Effect<RunningHookIngress, HookIngressError, SessionRegistry> =>
   Effect.gen(function* () {
     const registry = yield* SessionRegistry
@@ -195,7 +207,7 @@ export const startHookIngress = (
       try: async () => {
         await prepareSocketPath(socketPath)
         const server = createServer((socket) =>
-          handleConnection(socket, registry.record),
+          handleConnection(socket, registry.record, options.onEnvelope),
         )
 
         await listen(server, socketPath)

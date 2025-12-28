@@ -1,13 +1,18 @@
 export * from './config'
+export * from './daemon'
+export * from './doctor'
 export * from './hook-ingress'
+export * from './hook-settings'
 export * from './notifier'
 export * from './protocol'
 export * from './session-registry'
+export * from './service-install'
 export * from './telegram-api'
 export * from './telegram-polling'
 export * from './telegram-update-handler'
 export * from './tmux-bridge'
 export * from './topic-manager'
 export * from './tool-mute-rules'
+export * from './wizard'
 
 export const CLAUDEGRAM_CORE_VERSION = '0.0.0' as const

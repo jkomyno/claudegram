@@ -94,6 +94,8 @@ describe('handleTelegramUpdate', () => {
     })
     const callbackAnswers: Array<Readonly<Record<string, unknown>>> = []
     const api = TelegramApi.of({
+      getMe: () =>
+        Effect.succeed({ id: 1, is_bot: true, first_name: 'test-bot' }),
       getUpdates: () => Effect.succeed([]),
       sendMessage: () =>
         Effect.die(new Error('sendMessage is not used by the update handler')),

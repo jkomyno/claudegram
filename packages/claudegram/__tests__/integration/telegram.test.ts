@@ -228,7 +228,7 @@ describe('Telegram bridge', () => {
     await Effect.runPromise(
       notifier.notify(
         eventEnvelope(firstSession, {
-          hook_event_name: 'PermissionRequest',
+          hook_event_name: 'PreToolUse',
           tool_name: 'AskUserQuestion',
           tool_input: {
             questions: [
