@@ -5,6 +5,8 @@ export * from './protocol'
 export * from './session-registry'
 export * from './telegram-api'
 export * from './telegram-polling'
+export * from './telegram-update-handler'
+export * from './tmux-bridge'
 export * from './topic-manager'
 export * from './tool-mute-rules'
 
