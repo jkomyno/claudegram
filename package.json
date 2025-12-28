@@ -19,24 +19,24 @@
     "clean": "turbo run clean",
     "lint:ci": "oxlint .",
     "lint": "oxlint --fix .",
-    "test": "vitest --workspace ./vitest.workspace.ts run",
-    "test:unit": "vitest --workspace ./vitest.workspace.ts --project unit run",
-    "test:integration": "vitest --workspace ./vitest.workspace.ts --project integration run",
+    "test": "vitest --config ./vitest.config.ts run",
+    "test:unit": "vitest --config ./vitest.config.ts --project unit run",
+    "test:integration": "vitest --config ./vitest.config.ts --project integration run",
     "prepare": "is-ci || husky"
   },
   "devDependencies": {
-    "@arethetypeswrong/cli": "^0.16.4",
-    "@types/node": "20.9.0",
-    "husky": "^9.1.7",
-    "is-ci": "^3.0.1",
-    "lint-staged": "^15.2.11",
-    "rimraf": "^6.0.1",
-    "taze": "^0.17.2",
-    "tsup": "^8.3.5",
-    "tsx": "^4.19.2",
-    "turbo": "^2.3.3",
-    "typescript": "^5.7.2",
-    "vitest": "^2.1.8",
+    "@arethetypeswrong/cli": "0.18.2",
+    "@types/node": "25.0.3",
+    "husky": "9.1.7",
+    "is-ci": "4.1.0",
+    "lint-staged": "16.2.7",
+    "rimraf": "6.1.2",
+    "taze": "19.9.2",
+    "tsdown": "0.18.3",
+    "tsx": "4.21.0",
+    "turbo": "2.7.2",
+    "typescript": "5.9.3",
+    "vitest": "4.0.16",
     "oxlint": "1.35.0"
   },
   "pre-commit": "lint-staged",
@@ -46,5 +46,16 @@
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
   },
-  "packageManager": "pnpm@9.15.0"
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"],
+    "overrides": {
+      "@effect/cluster": "0.56.0",
+      "@effect/experimental": "0.58.0",
+      "@effect/platform-node-shared": "0.57.0",
+      "@effect/rpc": "0.73.0",
+      "@effect/sql": "0.49.0",
+      "@effect/workflow": "0.16.0"
+    }
+  },
+  "packageManager": "pnpm@10.26.2"
 }

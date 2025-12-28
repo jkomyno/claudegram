@@ -1,2 +1,2 @@
 #!/usr/bin/env node
-require('../build/bin.js')
+require('../build/bin.cjs')
