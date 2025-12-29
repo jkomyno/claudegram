@@ -1,0 +1,4 @@
+interface:
+  display_name: "Claudegram Effect v3"
+  short_description: "Effect v3 patterns and boundaries for claudegram"
+  default_prompt: "Use $effect-v3 to implement this claudegram behavior with pinned Effect v3 APIs."
