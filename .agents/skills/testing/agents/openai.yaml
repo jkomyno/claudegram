@@ -1,0 +1,4 @@
+interface:
+  display_name: "Claudegram Testing"
+  short_description: "Vitest strategy and verification for claudegram"
+  default_prompt: "Use $testing to add focused verification for this claudegram change."
