@@ -1,0 +1,4 @@
+interface:
+  display_name: "Claudegram TypeScript"
+  short_description: "TypeScript architecture for claudegram"
+  default_prompt: "Use $typescript to implement this TypeScript change with claudegram conventions."
