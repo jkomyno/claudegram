@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process'
 import { mkdir, open, readFile, unlink, writeFile } from 'node:fs/promises'
 import { dirname, extname, join } from 'node:path'
-import { createConnection } from 'node:net'
 
 import type * as HttpClient from '@effect/platform/HttpClient'
 import * as Data from 'effect/Data'
@@ -9,6 +8,7 @@ import * as Effect from 'effect/Effect'
 
 import { Config, type ClaudegramConfig } from './config'
 import { startHookIngress } from './hook-ingress'
+import { isMissingFile } from './node-errors'
 import { makeNotifier, Notifier } from './notifier'
 import { makeSessionRegistry, SessionRegistry } from './session-registry'
 import { makeTelegramApi, TelegramApi } from './telegram-api'
@@ -17,6 +17,9 @@ import { handleTelegramUpdate } from './telegram-update-handler'
 import { makeTmuxBridge, TmuxBridge } from './tmux-bridge'
 import { makeToolMuteRules, ToolMuteRules } from './tool-mute-rules'
 import { makeTopicManager, TopicManager } from './topic-manager'
+import { socketIsAlive } from './unix-socket'
+
+export { socketIsAlive } from './unix-socket'
 
 export interface DaemonPaths {
   readonly stateDirectory: string
@@ -44,12 +47,6 @@ export const daemonPaths = (config: ClaudegramConfig): DaemonPaths => {
   }
 }
 
-const isMissingFile = (cause: unknown): boolean =>
-  typeof cause === 'object' &&
-  cause !== null &&
-  'code' in cause &&
-  cause.code === 'ENOENT'
-
 const readPid = async (pidPath: string): Promise<number | undefined> => {
   try {
     const pid = Number((await readFile(pidPath, 'utf8')).trim())
@@ -75,19 +72,6 @@ const pidIsAlive = (pid: number): boolean => {
     )
   }
 }
-
-export const socketIsAlive = (socketPath: string): Promise<boolean> =>
-  new Promise((resolve) => {
-    const socket = createConnection({ path: socketPath })
-    socket.once('connect', () => {
-      socket.destroy()
-      resolve(true)
-    })
-    socket.once('error', () => {
-      socket.destroy()
-      resolve(false)
-    })
-  })
 
 export const inspectDaemon = (
   config: ClaudegramConfig,

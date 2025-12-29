@@ -6,6 +6,8 @@ import * as Data from 'effect/Data'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
+import { isMissingFile } from './node-errors'
+
 const MANAGED_COMMAND_PREFIX = 'CLAUDEGRAM_MANAGED_HOOK=1 '
 
 export const CLAUDEGRAM_HOOK_EVENTS = [
@@ -101,12 +103,7 @@ const readSettings = async (path: string): Promise<ClaudeSettings> => {
       await readFile(path, 'utf8'),
     )
   } catch (cause) {
-    if (
-      typeof cause === 'object' &&
-      cause !== null &&
-      'code' in cause &&
-      cause.code === 'ENOENT'
-    ) {
+    if (isMissingFile(cause)) {
       return {}
     }
     throw cause

@@ -25,6 +25,12 @@ const ClaudeSettingsSchema = Schema.Struct({
 
 const ClaudeSettingsJsonSchema = Schema.parseJson(ClaudeSettingsSchema)
 
+const inputFieldByToolName: Readonly<Record<string, string>> = {
+  Bash: 'command',
+  WebFetch: 'url',
+  WebSearch: 'query',
+}
+
 export interface ToolMuteRulesService {
   readonly isMuted: (event: HookEvent) => Effect.Effect<boolean>
 }
@@ -51,14 +57,7 @@ const inputCandidate = (toolName: string, input: unknown): string | undefined =>
   }
 
   const record = input as Readonly<Record<string, unknown>>
-  const field =
-    toolName === 'Bash'
-      ? record.command
-      : toolName === 'WebFetch'
-        ? record.url
-        : toolName === 'WebSearch'
-          ? record.query
-          : record.file_path
+  const field = record[inputFieldByToolName[toolName] ?? 'file_path']
 
   return typeof field === 'string' ? field : undefined
 }

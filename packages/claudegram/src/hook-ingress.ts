@@ -17,7 +17,9 @@ import {
   parseHookEnvelope,
   parseHookResponse,
 } from './protocol'
+import { isMissingFile } from './node-errors'
 import { SessionRegistry } from './session-registry'
+import { socketIsAlive } from './unix-socket'
 
 const MAX_HOOK_MESSAGE_BYTES = 1024 * 1024
 
@@ -54,19 +56,6 @@ const acknowledgement = (sessionId: string): HookAcknowledgement => ({
   sessionId,
 })
 
-const probeSocket = (socketPath: string): Promise<boolean> =>
-  new Promise((resolve) => {
-    const socket = createConnection({ path: socketPath })
-    socket.once('connect', () => {
-      socket.destroy()
-      resolve(true)
-    })
-    socket.once('error', () => {
-      socket.destroy()
-      resolve(false)
-    })
-  })
-
 const prepareSocketPath = async (socketPath: string): Promise<void> => {
   await mkdir(dirname(socketPath), { recursive: true, mode: 0o700 })
 
@@ -78,7 +67,7 @@ const prepareSocketPath = async (socketPath: string): Promise<void> => {
       })
     }
 
-    if (await probeSocket(socketPath)) {
+    if (await socketIsAlive(socketPath)) {
       throw new HookIngressError({
         message: `another claudegram daemon is listening at ${socketPath}`,
       })
@@ -88,12 +77,7 @@ const prepareSocketPath = async (socketPath: string): Promise<void> => {
   } catch (cause) {
     if (
       cause instanceof HookIngressError ||
-      !(
-        typeof cause === 'object' &&
-        cause !== null &&
-        'code' in cause &&
-        cause.code === 'ENOENT'
-      )
+      !isMissingFile(cause)
     ) {
       throw cause
     }
@@ -120,14 +104,7 @@ const closeServer = async (
       await unlink(socketPath)
     }
   } catch (cause) {
-    if (
-      !(
-        typeof cause === 'object' &&
-        cause !== null &&
-        'code' in cause &&
-        cause.code === 'ENOENT'
-      )
-    ) {
+    if (!isMissingFile(cause)) {
       throw cause
     }
   }

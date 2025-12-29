@@ -32,14 +32,18 @@ export interface TmuxBridgeOptions {
   readonly socketName?: string
 }
 
-const paneFor = (session: Session): string => {
+const paneFor = (
+  session: Session,
+): Effect.Effect<string, TmuxBridgeError> => {
   if (session.tmuxPane === undefined || session.tmuxPane.length === 0) {
-    throw new TmuxBridgeError({
-      message: `session ${session.id} is not attached to a tmux pane`,
-    })
+    return Effect.fail(
+      new TmuxBridgeError({
+        message: `session ${session.id} is not attached to a tmux pane`,
+      }),
+    )
   }
 
-  return session.tmuxPane
+  return Effect.succeed(session.tmuxPane)
 }
 
 export const makeTmuxBridge = (
@@ -67,16 +71,7 @@ export const makeTmuxBridge = (
   return TmuxBridge.of({
     sendText: (session, text) =>
       Effect.gen(function* () {
-        const pane = yield* Effect.try({
-          try: () => paneFor(session),
-          catch: (cause) =>
-            cause instanceof TmuxBridgeError
-              ? cause
-              : new TmuxBridgeError({
-                  message: `invalid tmux target for ${session.id}`,
-                  cause,
-                }),
-        })
+        const pane = yield* paneFor(session)
         yield* run(
           ['send-keys', '-t', pane, '-l', '--', text],
           `failed to send text to tmux pane ${pane}`,
@@ -88,16 +83,7 @@ export const makeTmuxBridge = (
       }),
     interrupt: (session) =>
       Effect.gen(function* () {
-        const pane = yield* Effect.try({
-          try: () => paneFor(session),
-          catch: (cause) =>
-            cause instanceof TmuxBridgeError
-              ? cause
-              : new TmuxBridgeError({
-                  message: `invalid tmux target for ${session.id}`,
-                  cause,
-                }),
-        })
+        const pane = yield* paneFor(session)
         yield* run(
           ['send-keys', '-t', pane, 'C-c'],
           `failed to interrupt tmux pane ${pane}`,

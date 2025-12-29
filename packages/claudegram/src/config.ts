@@ -7,6 +7,8 @@ import * as Data from 'effect/Data'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 
+import { isMissingFile } from './node-errors'
+
 export interface ClaudegramConfig {
   readonly botToken?: string
   readonly chatId?: number
@@ -90,12 +92,7 @@ const readConfigFile = async (
 
     return value as Partial<ClaudegramConfig>
   } catch (cause) {
-    if (
-      typeof cause === 'object' &&
-      cause !== null &&
-      'code' in cause &&
-      cause.code === 'ENOENT'
-    ) {
+    if (isMissingFile(cause)) {
       return {}
     }
 

@@ -131,6 +131,10 @@ export const makeTopicManager = Effect.gen(function* () {
             const staleTopics = Array.from(current.values()).filter((topic) =>
               staleSessionIds.has(topic.sessionId),
             )
+            if (staleTopics.length === 0) {
+              return [staleTopics, current] as const
+            }
+
             const next = new Map(current)
 
             for (const topic of staleTopics) {

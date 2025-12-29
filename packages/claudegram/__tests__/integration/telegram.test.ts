@@ -65,25 +65,32 @@ const startFakeTelegram = async (): Promise<FakeTelegram> => {
     calls.push({ method, body })
     response.setHeader('content-type', 'application/json')
 
-    const result: unknown =
-      method === 'createForumTopic'
-        ? {
-            message_thread_id: ++topicId,
-            name: body.name,
-          }
-        : method === 'sendMessage'
-          ? {
-              message_id: ++messageId,
-              message_thread_id: body.message_thread_id,
-              text: body.text,
-              chat: { id: body.chat_id, type: 'supergroup', is_forum: true },
-              ...(body.reply_markup === undefined
-                ? {}
-                : { reply_markup: body.reply_markup }),
-            }
-          : method === 'getUpdates'
-            ? updates
-            : true
+    let result: unknown
+    switch (method) {
+      case 'createForumTopic': {
+        result = { message_thread_id: ++topicId, name: body.name }
+        break
+      }
+      case 'sendMessage': {
+        result = {
+          message_id: ++messageId,
+          message_thread_id: body.message_thread_id,
+          text: body.text,
+          chat: { id: body.chat_id, type: 'supergroup', is_forum: true },
+          ...(body.reply_markup === undefined
+            ? {}
+            : { reply_markup: body.reply_markup }),
+        }
+        break
+      }
+      case 'getUpdates': {
+        result = updates
+        break
+      }
+      default: {
+        result = true
+      }
+    }
 
     response.end(JSON.stringify({ ok: true, result }))
   })

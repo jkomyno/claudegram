@@ -213,24 +213,16 @@ export const makeNotifier = Effect.gen(function* () {
         return Option.none()
       }
 
-      const actions: ReadonlyArray<PendingTelegramAction> = [
-        {
-          type: 'permission',
-          sessionId,
-          ...(tool.value.tool_use_id === undefined
-            ? {}
-            : { toolUseId: tool.value.tool_use_id }),
-          decision: 'allow',
-        },
-        {
-          type: 'permission',
-          sessionId,
-          ...(tool.value.tool_use_id === undefined
-            ? {}
-            : { toolUseId: tool.value.tool_use_id }),
-          decision: 'deny',
-        },
-      ]
+      const actions: ReadonlyArray<PendingTelegramAction> = (
+        ['allow', 'deny'] as const
+      ).map((decision) => ({
+        type: 'permission',
+        sessionId,
+        ...(tool.value.tool_use_id === undefined
+          ? {}
+          : { toolUseId: tool.value.tool_use_id }),
+        decision,
+      }))
       const [allowToken = '', denyToken = ''] = yield* registerActions(actions)
 
       return Option.some({
