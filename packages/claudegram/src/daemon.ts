@@ -7,16 +7,27 @@ import * as Data from 'effect/Data'
 import * as Effect from 'effect/Effect'
 
 import { Config, type ClaudegramConfig } from './config'
+import { loadDaemonSnapshot, writeDaemonSnapshot } from './daemon-state'
 import { startHookIngress } from './hook-ingress'
 import { isMissingFile } from './node-errors'
 import { makeNotifier, Notifier } from './notifier'
-import { makeSessionRegistry, SessionRegistry } from './session-registry'
+import {
+  makeSessionRegistryWithSessions,
+  SessionRegistry,
+} from './session-registry'
 import { makeTelegramApi, TelegramApi } from './telegram-api'
 import { runTelegramPolling } from './telegram-polling'
 import { handleTelegramUpdate } from './telegram-update-handler'
+import {
+  controlInstalledService,
+  type ServiceInstallOptions,
+} from './service-install'
 import { makeTmuxBridge, TmuxBridge } from './tmux-bridge'
 import { makeToolMuteRules, ToolMuteRules } from './tool-mute-rules'
-import { makeTopicManager, TopicManager } from './topic-manager'
+import {
+  makeTopicManagerWithOptions,
+  TopicManager,
+} from './topic-manager'
 import { socketIsAlive } from './unix-socket'
 
 export { socketIsAlive } from './unix-socket'
@@ -25,6 +36,7 @@ export interface DaemonPaths {
   readonly stateDirectory: string
   readonly pidPath: string
   readonly logPath: string
+  readonly snapshotPath: string
 }
 
 export type DaemonState =
@@ -38,12 +50,17 @@ export class DaemonError extends Data.TaggedError('DaemonError')<{
   readonly cause?: unknown
 }> {}
 
+export interface DaemonControlOptions {
+  readonly service?: ServiceInstallOptions
+}
+
 export const daemonPaths = (config: ClaudegramConfig): DaemonPaths => {
   const stateDirectory = dirname(config.socketPath)
   return {
     stateDirectory,
     pidPath: join(stateDirectory, 'daemon.pid'),
     logPath: join(stateDirectory, 'daemon.log'),
+    snapshotPath: join(stateDirectory, 'daemon-state.json'),
   }
 }
 
@@ -127,6 +144,7 @@ const launchCommand = (): {
 
 export const startDaemon = (
   config: ClaudegramConfig,
+  options: DaemonControlOptions = {},
 ): Effect.Effect<DaemonState, DaemonError> =>
   Effect.tryPromise({
     try: async () => {
@@ -137,11 +155,29 @@ export const startDaemon = (
       }
 
       const current = await Effect.runPromise(inspectDaemon(config))
-      if (current.status === 'running' || current.status === 'degraded') {
+      if (current.status === 'running') {
         return current
       }
 
       const paths = daemonPaths(config)
+      const managed = await Effect.runPromise(
+        controlInstalledService('start', options.service),
+      )
+      if (managed) {
+        const state = await waitForState(config, 'running')
+        if (state.status !== 'running') {
+          throw new DaemonError({
+            message: `managed daemon did not become ready; inspect ${paths.logPath}`,
+          })
+        }
+        return state
+      }
+
+      if (current.status === 'degraded') {
+        await unlink(paths.pidPath).catch((cause) => {
+          if (!isMissingFile(cause)) throw cause
+        })
+      }
       await mkdir(paths.stateDirectory, { recursive: true, mode: 0o700 })
       const output = await open(paths.logPath, 'a', 0o600)
       const command = launchCommand()
@@ -169,22 +205,41 @@ export const startDaemon = (
 
 export const stopDaemon = (
   config: ClaudegramConfig,
+  options: DaemonControlOptions = {},
 ): Effect.Effect<DaemonState, DaemonError> =>
   Effect.tryPromise({
     try: async () => {
       const paths = daemonPaths(config)
-      const pid = await readPid(paths.pidPath)
-      if (pid === undefined || !pidIsAlive(pid)) {
+      const managed = await Effect.runPromise(
+        controlInstalledService('stop', options.service),
+      )
+      if (managed) {
+        const state = await waitForState(config, 'stopped')
+        if (state.status !== 'stopped') {
+          throw new DaemonError({
+            message: 'managed daemon did not stop within 5 seconds',
+          })
+        }
+        return state
+      }
+
+      const current = await Effect.runPromise(inspectDaemon(config))
+      if (current.status === 'stopped' || current.status === 'degraded') {
         await unlink(paths.pidPath).catch((cause) => {
           if (!isMissingFile(cause)) throw cause
         })
-        return { status: 'stopped', ...(pid === undefined ? {} : { pid }) } as const
+        return {
+          status: 'stopped',
+          ...('pid' in current ? { pid: current.pid } : {}),
+        } as const
       }
 
-      process.kill(pid, 'SIGTERM')
+      process.kill(current.pid, 'SIGTERM')
       const state = await waitForState(config, 'stopped')
       if (state.status !== 'stopped') {
-        throw new DaemonError({ message: `daemon ${pid} did not stop within 5 seconds` })
+        throw new DaemonError({
+          message: `daemon ${current.pid} did not stop within 5 seconds`,
+        })
       }
       return state
     },
@@ -196,11 +251,34 @@ export const stopDaemon = (
 
 export const restartDaemon = (
   config: ClaudegramConfig,
+  options: DaemonControlOptions = {},
 ): Effect.Effect<DaemonState, DaemonError> =>
-  Effect.gen(function* () {
-    yield* stopDaemon(config)
-    return yield* startDaemon(config)
-  })
+  controlInstalledService('restart', options.service).pipe(
+    Effect.mapError(
+      (cause) => new DaemonError({ message: 'failed to restart daemon', cause }),
+    ),
+    Effect.flatMap((managed) =>
+      managed
+        ? Effect.tryPromise({
+            try: async () => {
+              const state = await waitForState(config, 'running')
+              if (state.status !== 'running') {
+                throw new DaemonError({
+                  message: 'managed daemon did not restart within 5 seconds',
+                })
+              }
+              return state
+            },
+            catch: (cause) =>
+              cause instanceof DaemonError
+                ? cause
+                : new DaemonError({ message: 'failed to restart daemon', cause }),
+          })
+        : stopDaemon(config, options).pipe(
+            Effect.andThen(startDaemon(config, options)),
+          ),
+    ),
+  )
 
 const waitForSignal = (): Effect.Effect<NodeJS.Signals> =>
   Effect.async((resume) => {
@@ -219,6 +297,17 @@ const waitForSignal = (): Effect.Effect<NodeJS.Signals> =>
       process.off('SIGTERM', onTerminate)
     })
   })
+
+export const cleanupInactiveTopics = (
+  topics: Pick<TopicManager['Service'], 'cleanupInactiveBefore'>,
+  topicTtlHours: number,
+  now: () => number = Date.now,
+) =>
+  Effect.suspend(() =>
+    topics.cleanupInactiveBefore(
+      new Date(now() - topicTtlHours * 60 * 60 * 1000),
+    ),
+  )
 
 export const runDaemon = (
   config: ClaudegramConfig,
@@ -255,9 +344,15 @@ export const runDaemon = (
           ),
       )
 
+      const snapshot = yield* loadDaemonSnapshot(paths.snapshotPath)
       const api = yield* makeTelegramApi({ botToken: config.botToken })
-      const registry = yield* makeSessionRegistry
-      const topics = yield* makeTopicManager.pipe(
+      const registry = yield* makeSessionRegistryWithSessions(snapshot.sessions)
+      const sessionIds = new Set(snapshot.sessions.map((session) => session.id))
+      const topics = yield* makeTopicManagerWithOptions({
+        initialTopics: snapshot.topics.filter((topic) =>
+          sessionIds.has(topic.sessionId),
+        ),
+      }).pipe(
         Effect.provideService(Config, config),
         Effect.provideService(TelegramApi, api),
         Effect.provideService(SessionRegistry, registry),
@@ -271,10 +366,29 @@ export const runDaemon = (
         Effect.provideService(TopicManager, topics),
         Effect.provideService(ToolMuteRules, muteRules),
       )
+      const persistence = yield* Effect.makeSemaphore(1)
+      const persistState = persistence.withPermits(1)(
+        Effect.all({
+          sessions: registry.list,
+          topics: topics.list,
+        }).pipe(
+          Effect.flatMap((current) =>
+            writeDaemonSnapshot(paths.snapshotPath, current),
+          ),
+        ),
+      )
       const ingress = yield* startHookIngress(config.socketPath, {
-        onEnvelope: (envelope) => notifier.notify(envelope).pipe(Effect.asVoid),
+        onEnvelope: (envelope) =>
+          notifier.notify(envelope).pipe(
+            Effect.matchEffect({
+              onFailure: (cause) =>
+                persistState.pipe(Effect.andThen(Effect.fail(cause))),
+              onSuccess: () => persistState,
+            }),
+          ),
       }).pipe(Effect.provideService(SessionRegistry, registry))
       yield* Effect.addFinalizer(() => ingress.close.pipe(Effect.ignore))
+      yield* Effect.addFinalizer(() => persistState.pipe(Effect.ignore))
 
       const provideRuntimeServices = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         effect.pipe(
@@ -295,10 +409,12 @@ export const runDaemon = (
         Effect.forever(
           Effect.sleep('5 minutes').pipe(
             Effect.andThen(
-              topics.cleanupInactiveBefore(
-                new Date(Date.now() - config.topicTtlHours * 60 * 60 * 1000),
-              ),
+              cleanupInactiveTopics(topics, config.topicTtlHours),
             ),
+            Effect.matchEffect({
+              onFailure: () => persistState,
+              onSuccess: () => persistState,
+            }),
             Effect.catchAll(() => Effect.void),
           ),
         ),

@@ -5,18 +5,25 @@ import * as Data from 'effect/Data'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 import * as SynchronizedRef from 'effect/SynchronizedRef'
 
 import { Config } from './config'
 import { type Session, SessionRegistry } from './session-registry'
 import { TelegramApi } from './telegram-api'
 
-export interface SessionTopic {
-  readonly sessionId: string
-  readonly host: string
-  readonly threadId: number
-  readonly name: string
-  readonly createdAt: string
+export const SessionTopicSchema = Schema.Struct({
+  sessionId: Schema.NonEmptyString,
+  host: Schema.NonEmptyString,
+  threadId: Schema.Number,
+  name: Schema.NonEmptyString,
+  createdAt: Schema.NonEmptyString,
+})
+
+export type SessionTopic = typeof SessionTopicSchema.Type
+
+export interface TopicManagerOptions {
+  readonly initialTopics?: ReadonlyArray<SessionTopic>
 }
 
 export interface TopicManagerService {
@@ -59,7 +66,9 @@ const mapError = (message: string) => (cause: unknown) =>
     ? cause
     : new TopicManagerError({ message, cause })
 
-export const makeTopicManager = Effect.gen(function* () {
+export const makeTopicManagerWithOptions = (
+  options: TopicManagerOptions = {},
+) => Effect.gen(function* () {
   const config = yield* Config
   const api = yield* TelegramApi
   const registry = yield* SessionRegistry
@@ -72,7 +81,9 @@ export const makeTopicManager = Effect.gen(function* () {
 
   const chatId = config.chatId
   const topics = yield* SynchronizedRef.make<ReadonlyMap<string, SessionTopic>>(
-    new Map(),
+    new Map(
+      (options.initialTopics ?? []).map((topic) => [topic.sessionId, topic]),
+    ),
   )
 
   return TopicManager.of({
@@ -126,28 +137,37 @@ export const makeTopicManager = Effect.gen(function* () {
             .map((session) => session.id),
         )
 
-        const removed = yield* SynchronizedRef.modifyEffect(topics, (current) =>
-          Effect.gen(function* () {
-            const staleTopics = Array.from(current.values()).filter((topic) =>
-              staleSessionIds.has(topic.sessionId),
-            )
-            if (staleTopics.length === 0) {
-              return [staleTopics, current] as const
-            }
-
-            const next = new Map(current)
-
-            for (const topic of staleTopics) {
-              yield* api.deleteForumTopic(chatId, topic.threadId)
-              next.delete(topic.sessionId)
-            }
-
-            return [staleTopics, next] as const
-          }),
+        const current = yield* SynchronizedRef.get(topics)
+        const staleTopics = Array.from(current.values()).filter((topic) =>
+          staleSessionIds.has(topic.sessionId),
         )
+        const outcomes = yield* Effect.forEach(staleTopics, (topic) =>
+          api.deleteForumTopic(chatId, topic.threadId).pipe(
+            Effect.map(() => ({ topic, deleted: true as const })),
+            Effect.catchAll((cause) =>
+              Effect.succeed({ topic, deleted: false as const, cause }),
+            ),
+          ),
+        )
+        const removed = outcomes
+          .filter((outcome) => outcome.deleted)
+          .map((outcome) => outcome.topic)
 
         for (const topic of removed) {
+          yield* SynchronizedRef.update(topics, (currentTopics) => {
+            const next = new Map(currentTopics)
+            next.delete(topic.sessionId)
+            return next
+          })
           yield* registry.remove(topic.sessionId)
+        }
+
+        const failed = outcomes.find((outcome) => !outcome.deleted)
+        if (failed !== undefined && !failed.deleted) {
+          return yield* new TopicManagerError({
+            message: `failed to delete topic for ${failed.topic.sessionId}`,
+            cause: failed.cause,
+          })
         }
 
         return removed
@@ -156,5 +176,7 @@ export const makeTopicManager = Effect.gen(function* () {
       ),
   })
 })
+
+export const makeTopicManager = makeTopicManagerWithOptions()
 
 export const TopicManagerLive = Layer.effect(TopicManager, makeTopicManager)

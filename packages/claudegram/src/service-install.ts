@@ -18,7 +18,13 @@ export interface ServiceInstallOptions {
   readonly platform?: NodeJS.Platform
   readonly invocationCommand?: string
   readonly executeCommands?: boolean
+  readonly runCommand?: (
+    executable: string,
+    arguments_: ReadonlyArray<string>,
+  ) => Promise<void>
 }
+
+export type ServiceAction = 'start' | 'stop' | 'restart'
 
 export interface ServiceResult {
   readonly servicePath: string
@@ -139,6 +145,86 @@ const writeAtomic = async (path: string, content: string): Promise<void> => {
 const invocationForDaemon = (override?: string): string =>
   override ?? currentHookInvocation().replace(/ hook$/u, ' daemon')
 
+const commandSucceeds = async (
+  command: ServiceInstallOptions['runCommand'],
+  executable: string,
+  arguments_: ReadonlyArray<string>,
+): Promise<boolean> => {
+  try {
+    await (command ?? runCommand)(executable, arguments_)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const runServiceAction = async (
+  action: ServiceAction,
+  servicePlatform: ServicePlatform,
+  servicePath: string,
+  command: ServiceInstallOptions['runCommand'],
+): Promise<void> => {
+  const execute = command ?? runCommand
+  if (servicePlatform === 'linux') {
+    await execute('systemctl', ['--user', action, 'claudegram.service'])
+    return
+  }
+
+  const domain = `gui/${process.getuid?.() ?? 0}`
+  const target = `${domain}/${SERVICE_NAME}`
+  if (action === 'stop') {
+    const loaded = await commandSucceeds(command, 'launchctl', [
+      'print',
+      target,
+    ])
+    if (!loaded) return
+    await execute('launchctl', ['bootout', domain, servicePath])
+    return
+  }
+
+  const loaded = await commandSucceeds(command, 'launchctl', [
+    'print',
+    target,
+  ])
+  if (!loaded) {
+    await execute('launchctl', ['bootstrap', domain, servicePath])
+    return
+  }
+
+  await execute('launchctl', ['kickstart', '-k', target])
+}
+
+export const controlInstalledService = (
+  action: ServiceAction,
+  options: ServiceInstallOptions = {},
+): Effect.Effect<boolean, ServiceInstallError> =>
+  Effect.gen(function* () {
+    const servicePlatform = yield* detectPlatform(options.platform ?? platform())
+    const servicePath = servicePathFor(
+      servicePlatform,
+      options.homeDirectory ?? homedir(),
+    )
+    const installed = yield* Effect.promise(() => fileExists(servicePath))
+    if (!installed) return false
+    if (options.executeCommands === false) return true
+
+    yield* Effect.tryPromise({
+      try: () =>
+        runServiceAction(
+          action,
+          servicePlatform,
+          servicePath,
+          options.runCommand,
+        ),
+      catch: (cause) =>
+        new ServiceInstallError({
+          message: `failed to ${action} ${servicePlatform} service`,
+          cause,
+        }),
+    })
+    return true
+  })
+
 export const installService = (
   config: ClaudegramConfig,
   options: ServiceInstallOptions = {},
@@ -152,8 +238,6 @@ export const installService = (
       servicePlatform === 'darwin'
         ? launchdDefinition(invocation, join(dirname(config.socketPath), 'daemon.log'))
         : systemdDefinition(invocation)
-    const existed = yield* Effect.promise(() => fileExists(servicePath))
-
     yield* Effect.tryPromise({
       try: () => writeAtomic(servicePath, definition),
       catch: (cause) =>
@@ -164,18 +248,16 @@ export const installService = (
       yield* Effect.tryPromise({
         try: async () => {
           if (servicePlatform === 'darwin') {
-            const domain = `gui/${process.getuid?.() ?? 0}`
-            if (!existed) {
-              await runCommand('launchctl', ['bootstrap', domain, servicePath])
-            }
-            await runCommand('launchctl', [
-              'kickstart',
-              '-k',
-              `${domain}/${SERVICE_NAME}`,
-            ])
+            await runServiceAction(
+              'start',
+              servicePlatform,
+              servicePath,
+              options.runCommand,
+            )
           } else {
-            await runCommand('systemctl', ['--user', 'daemon-reload'])
-            await runCommand('systemctl', [
+            const execute = options.runCommand ?? runCommand
+            await execute('systemctl', ['--user', 'daemon-reload'])
+            await execute('systemctl', [
               '--user',
               'enable',
               '--now',
@@ -207,19 +289,21 @@ export const uninstallService = (
       yield* Effect.tryPromise({
         try: async () => {
           if (servicePlatform === 'darwin') {
-            await runCommand('launchctl', [
-              'bootout',
-              `gui/${process.getuid?.() ?? 0}`,
+            await runServiceAction(
+              'stop',
+              servicePlatform,
               servicePath,
-            ])
+              options.runCommand,
+            )
           } else {
-            await runCommand('systemctl', [
+            const execute = options.runCommand ?? runCommand
+            await execute('systemctl', [
               '--user',
               'disable',
               '--now',
               'claudegram.service',
             ])
-            await runCommand('systemctl', ['--user', 'daemon-reload'])
+            await execute('systemctl', ['--user', 'daemon-reload'])
           }
         },
         catch: (cause) =>

@@ -1,5 +1,6 @@
 export * from './config'
 export * from './daemon'
+export * from './daemon-state'
 export * from './doctor'
 export * from './hook-ingress'
 export * from './hook-settings'
