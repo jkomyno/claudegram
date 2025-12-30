@@ -5,7 +5,11 @@ import type * as HttpClient from '@effect/platform/HttpClient'
 import * as Data from 'effect/Data'
 import * as Effect from 'effect/Effect'
 
-import type { ClaudegramConfig } from './config'
+import {
+  type ClaudegramConfig,
+  encodePersistedConfig,
+  type PersistedConfig,
+} from './config'
 import { startDaemon, type DaemonState } from './daemon'
 import { installHooks, type HookSettingsResult } from './hook-settings'
 import {
@@ -51,19 +55,16 @@ const writeConfig = async (
 ): Promise<void> => {
   await mkdir(dirname(config.configPath), { recursive: true, mode: 0o700 })
   const temporaryPath = `${config.configPath}.${process.pid}.tmp`
+  const persistedConfig: PersistedConfig = {
+    botToken,
+    chatId,
+    socketPath: config.socketPath,
+    topicTtlHours: config.topicTtlHours,
+    verbose: config.verbose,
+  }
   await writeFile(
     temporaryPath,
-    `${JSON.stringify(
-      {
-        botToken,
-        chatId,
-        socketPath: config.socketPath,
-        topicTtlHours: config.topicTtlHours,
-        verbose: config.verbose,
-      },
-      null,
-      2,
-    )}\n`,
+    `${encodePersistedConfig(persistedConfig)}\n`,
     { mode: 0o600 },
   )
   await rename(temporaryPath, config.configPath)

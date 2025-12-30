@@ -6,8 +6,34 @@ import * as Context from 'effect/Context'
 import * as Data from 'effect/Data'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
+import * as Schema from 'effect/Schema'
 
 import { isMissingFile } from './node-errors'
+
+const TopicTtlHoursSchema = Schema.Number.pipe(
+  Schema.finite(),
+  Schema.greaterThan(0),
+)
+
+const TelegramChatIdSchema = Schema.Number.pipe(
+  Schema.filter(Number.isSafeInteger, {
+    description: 'a safe integer Telegram chat id',
+  }),
+)
+
+export const PersistedConfigSchema = Schema.Struct({
+  botToken: Schema.optional(Schema.String),
+  chatId: Schema.optional(TelegramChatIdSchema),
+  socketPath: Schema.optional(Schema.String),
+  topicTtlHours: Schema.optional(TopicTtlHoursSchema),
+  verbose: Schema.optional(Schema.Boolean),
+})
+
+export type PersistedConfig = typeof PersistedConfigSchema.Type
+
+const PersistedConfigJsonSchema = Schema.parseJson(PersistedConfigSchema, {
+  space: 2,
+})
 
 export interface ClaudegramConfig {
   readonly botToken?: string
@@ -21,7 +47,7 @@ export interface ClaudegramConfig {
 export interface ConfigLoadOptions {
   readonly env?: NodeJS.ProcessEnv
   readonly homeDirectory?: string
-  readonly file?: Partial<ClaudegramConfig>
+  readonly file?: PersistedConfig
 }
 
 export class ConfigError extends Data.TaggedError('ConfigError')<{
@@ -83,22 +109,33 @@ const parseChatId = (
 
 const readConfigFile = async (
   configPath: string,
-): Promise<Partial<ClaudegramConfig>> => {
+): Promise<PersistedConfig> => {
   try {
-    const value: unknown = JSON.parse(await readFile(configPath, 'utf8'))
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-      throw new ConfigError({ message: `${configPath} must contain a JSON object` })
-    }
-
-    return value as Partial<ClaudegramConfig>
+    return Schema.decodeUnknownSync(PersistedConfigJsonSchema)(
+      await readFile(configPath, 'utf8'),
+    )
   } catch (cause) {
     if (isMissingFile(cause)) {
       return {}
     }
 
-    throw cause
+    throw new ConfigError({
+      message: `failed to read ${configPath}`,
+      cause,
+    })
   }
 }
+
+const decodeConfigFile = (value: PersistedConfig): PersistedConfig => {
+  try {
+    return Schema.decodeUnknownSync(PersistedConfigSchema)(value)
+  } catch (cause) {
+    throw new ConfigError({ message: 'invalid provided config file', cause })
+  }
+}
+
+export const encodePersistedConfig = (config: PersistedConfig): string =>
+  Schema.encodeSync(PersistedConfigJsonSchema)(config)
 
 export const loadConfig = (
   options: ConfigLoadOptions = {},
@@ -111,7 +148,10 @@ export const loadConfig = (
       const stateRoot = env.XDG_STATE_HOME ?? join(homeDirectory, '.local', 'state')
       const configPath =
         env.CLAUDEGRAM_CONFIG ?? join(configRoot, 'claudegram', 'config.json')
-      const file = options.file ?? (await readConfigFile(configPath))
+      const file =
+        options.file === undefined
+          ? await readConfigFile(configPath)
+          : decodeConfigFile(options.file)
       const topicTtlHours = parsePositiveNumber(
         env.CLAUDEGRAM_TOPIC_TTL_HOURS,
         file.topicTtlHours ?? 72,
