@@ -1,6 +1,8 @@
 import * as Data from 'effect/Data'
+import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Ref from 'effect/Ref'
+import * as Schedule from 'effect/Schedule'
 
 import { TelegramApi, type TelegramUpdate } from './telegram-api'
 
@@ -15,6 +17,14 @@ export type TelegramUpdateHandler = (
   update: TelegramUpdate,
 ) => Effect.Effect<void, unknown>
 
+export interface TelegramPollingOptions {
+  readonly initialRetryDelay?: Duration.DurationInput
+  readonly maximumRetryDelay?: Duration.DurationInput
+}
+
+const DEFAULT_INITIAL_RETRY_DELAY = Duration.seconds(1)
+const DEFAULT_MAXIMUM_RETRY_DELAY = Duration.seconds(30)
+
 export const pollTelegramOnce = (
   offset: number | undefined,
   handler: TelegramUpdateHandler,
@@ -25,7 +35,13 @@ export const pollTelegramOnce = (
     let nextOffset = offset
 
     for (const update of updates) {
-      yield* handler(update)
+      yield* handler(update).pipe(
+        Effect.catchAll((cause) =>
+          Effect.logWarning('Skipping failed Telegram update', cause).pipe(
+            Effect.annotateLogs('telegramUpdateId', update.update_id),
+          ),
+        ),
+      )
       nextOffset = update.update_id + 1
     }
 
@@ -42,14 +58,29 @@ export const pollTelegramOnce = (
 
 export const runTelegramPolling = (
   handler: TelegramUpdateHandler,
+  options: TelegramPollingOptions = {},
 ): Effect.Effect<never, TelegramPollingError, TelegramApi> =>
   Effect.gen(function* () {
     const offset = yield* Ref.make<number | undefined>(undefined)
+    const maximumRetryDelay =
+      options.maximumRetryDelay ?? DEFAULT_MAXIMUM_RETRY_DELAY
+    const retryPolicy = Schedule.exponential(
+      options.initialRetryDelay ?? DEFAULT_INITIAL_RETRY_DELAY,
+    ).pipe(
+      Schedule.modifyDelay((_attempt, delay) =>
+        Duration.min(delay, maximumRetryDelay),
+      ),
+    )
 
     yield* Effect.forever(
       Effect.gen(function* () {
         const current = yield* Ref.get(offset)
-        const next = yield* pollTelegramOnce(current, handler)
+        const next = yield* pollTelegramOnce(current, handler).pipe(
+          Effect.tapError((cause) =>
+            Effect.logWarning('Telegram polling failed; retrying', cause),
+          ),
+          Effect.retry(retryPolicy),
+        )
         yield* Ref.set(offset, next)
       }),
     )

@@ -3,6 +3,7 @@ import * as HttpClientRequest from '@effect/platform/HttpClientRequest'
 import * as HttpClientResponse from '@effect/platform/HttpClientResponse'
 import * as Context from 'effect/Context'
 import * as Data from 'effect/Data'
+import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
@@ -133,7 +134,12 @@ const responseSchema = <A, I>(result: Schema.Schema<A, I>) =>
 export interface TelegramApiOptions {
   readonly botToken: string
   readonly baseUrl?: string
+  readonly requestTimeoutMilliseconds?: number
+  readonly longPollGraceMilliseconds?: number
 }
+
+const DEFAULT_REQUEST_TIMEOUT_MILLISECONDS = 10_000
+const DEFAULT_LONG_POLL_GRACE_MILLISECONDS = 5_000
 
 export const makeTelegramApi = (
   options: TelegramApiOptions,
@@ -144,11 +150,18 @@ export const makeTelegramApi = (
       /\/$/,
       '',
     )
+    const requestTimeoutMilliseconds =
+      options.requestTimeoutMilliseconds ??
+      DEFAULT_REQUEST_TIMEOUT_MILLISECONDS
+    const longPollGraceMilliseconds =
+      options.longPollGraceMilliseconds ??
+      DEFAULT_LONG_POLL_GRACE_MILLISECONDS
 
     const call = <A, I>(
       method: string,
       body: Readonly<Record<string, unknown>>,
       result: Schema.Schema<A, I>,
+      timeoutMilliseconds = requestTimeoutMilliseconds,
     ): Effect.Effect<A, TelegramApiError> =>
       Effect.gen(function* () {
         const request = HttpClientRequest.post(
@@ -168,6 +181,14 @@ export const makeTelegramApi = (
 
         return decoded.result
       }).pipe(
+        Effect.timeoutFail({
+          duration: Duration.millis(timeoutMilliseconds),
+          onTimeout: () =>
+            new TelegramApiError({
+              method,
+              message: `Telegram API call ${method} timed out after ${timeoutMilliseconds}ms`,
+            }),
+        }),
         Effect.mapError((cause) =>
           cause instanceof TelegramApiError
             ? cause
@@ -192,6 +213,7 @@ export const makeTelegramApi = (
             allowed_updates: ['message', 'callback_query'],
           },
           Schema.Array(TelegramUpdateSchema),
+          (pollOptions.timeout ?? 30) * 1000 + longPollGraceMilliseconds,
         ),
       sendMessage: (messageOptions) =>
         call(

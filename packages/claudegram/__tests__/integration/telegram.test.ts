@@ -2,6 +2,7 @@ import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 
 import * as FetchHttpClient from '@effect/platform/FetchHttpClient'
+import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -16,8 +17,10 @@ import {
   makeTopicManager,
   parseHookEvent,
   pollTelegramOnce,
+  runTelegramPolling,
   SessionRegistry,
   TelegramApi,
+  TelegramApiError,
   ToolMuteRules,
   TopicManager,
 } from '../../src'
@@ -30,6 +33,8 @@ interface RecordedCall {
 interface FakeTelegram {
   readonly baseUrl: string
   readonly calls: Array<RecordedCall>
+  failedGetUpdates: number
+  readonly heldMethods: Set<string>
   updates: ReadonlyArray<unknown>
   readonly close: () => Promise<void>
 }
@@ -57,13 +62,29 @@ const startFakeTelegram = async (): Promise<FakeTelegram> => {
   const calls: Array<RecordedCall> = []
   let topicId = 100
   let messageId = 1000
+  let failedGetUpdates = 0
+  const heldMethods = new Set<string>()
   let updates: ReadonlyArray<unknown> = []
 
   const server = createServer(async (request, response) => {
     const method = request.url?.split('/').at(-1) ?? ''
     const body = await readRequestBody(request)
     calls.push({ method, body })
+
+    if (heldMethods.has(method)) {
+      return
+    }
+
     response.setHeader('content-type', 'application/json')
+
+    if (method === 'getUpdates' && failedGetUpdates > 0) {
+      failedGetUpdates -= 1
+      response.statusCode = 503
+      response.end(
+        JSON.stringify({ ok: false, description: 'temporarily unavailable' }),
+      )
+      return
+    }
 
     let result: unknown
     switch (method) {
@@ -104,6 +125,13 @@ const startFakeTelegram = async (): Promise<FakeTelegram> => {
   const fake: FakeTelegram = {
     baseUrl: `http://127.0.0.1:${address.port}`,
     calls,
+    get failedGetUpdates() {
+      return failedGetUpdates
+    },
+    set failedGetUpdates(value: number) {
+      failedGetUpdates = value
+    },
+    heldMethods,
     get updates() {
       return updates
     },
@@ -119,6 +147,7 @@ const startFakeTelegram = async (): Promise<FakeTelegram> => {
             reject(cause)
           }
         })
+        server.closeAllConnections()
       }),
   }
   fakeServers.push(fake)
@@ -390,6 +419,105 @@ describe('Telegram bridge', () => {
         timeout: 30,
         allowed_updates: ['message', 'callback_query'],
       },
+    })
+  })
+
+  it('recovers from a transient polling failure', async () => {
+    const fake = await startFakeTelegram()
+    fake.failedGetUpdates = 1
+    fake.updates = [
+      {
+        update_id: 51,
+        message: {
+          message_id: 8,
+          message_thread_id: 101,
+          text: 'continue after retry',
+          chat: { id: -100123, type: 'supergroup', is_forum: true },
+        },
+      },
+    ]
+    const { api } = await makeTestServices(fake)
+    const seen: Array<number> = []
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const processed = yield* Deferred.make<void>()
+          yield* Effect.forkScoped(
+            runTelegramPolling(
+              (update) =>
+                Effect.gen(function* () {
+                  seen.push(update.update_id)
+                  yield* Deferred.succeed(processed, undefined)
+                }),
+              {
+                initialRetryDelay: '1 millis',
+                maximumRetryDelay: '2 millis',
+              },
+            ).pipe(Effect.provideService(TelegramApi, api)),
+          )
+          yield* Deferred.await(processed)
+        }),
+      ),
+    )
+
+    expect(seen).toEqual([51])
+    expect(
+      fake.calls.filter((call) => call.method === 'getUpdates').length,
+    ).toBeGreaterThanOrEqual(2)
+  })
+
+  it('skips a failed update and advances past later updates', async () => {
+    const fake = await startFakeTelegram()
+    fake.updates = [
+      { update_id: 61 },
+      { update_id: 62 },
+    ]
+    const { api } = await makeTestServices(fake)
+    const seen: Array<number> = []
+
+    const nextOffset = await Effect.runPromise(
+      pollTelegramOnce(61, (update) => {
+        if (update.update_id === 61) {
+          return Effect.fail(new Error('poison update'))
+        }
+        return Effect.sync(() => {
+          seen.push(update.update_id)
+        })
+      }).pipe(Effect.provideService(TelegramApi, api)),
+    )
+
+    expect(seen).toEqual([62])
+    expect(nextOffset).toBe(63)
+  })
+
+  it('times out held-open ordinary and long-poll responses', async () => {
+    const fake = await startFakeTelegram()
+    fake.heldMethods.add('getMe')
+    fake.heldMethods.add('getUpdates')
+    const api = await Effect.runPromise(
+      makeTelegramApi({
+        botToken: 'fake-token',
+        baseUrl: fake.baseUrl,
+        longPollGraceMilliseconds: 25,
+        requestTimeoutMilliseconds: 25,
+      }).pipe(Effect.provide(FetchHttpClient.layer)),
+    )
+
+    const ordinaryError = await Effect.runPromise(Effect.flip(api.getMe()))
+    const longPollError = await Effect.runPromise(
+      Effect.flip(api.getUpdates({ timeout: 0 })),
+    )
+
+    expect(ordinaryError).toBeInstanceOf(TelegramApiError)
+    expect(ordinaryError).toMatchObject({
+      method: 'getMe',
+      message: 'Telegram API call getMe timed out after 25ms',
+    })
+    expect(longPollError).toBeInstanceOf(TelegramApiError)
+    expect(longPollError).toMatchObject({
+      method: 'getUpdates',
+      message: 'Telegram API call getUpdates timed out after 25ms',
     })
   })
 })

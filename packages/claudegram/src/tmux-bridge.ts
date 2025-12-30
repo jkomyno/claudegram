@@ -30,7 +30,10 @@ export class TmuxBridgeError extends Data.TaggedError('TmuxBridgeError')<{
 export interface TmuxBridgeOptions {
   readonly executable?: string
   readonly socketName?: string
+  readonly commandTimeoutMilliseconds?: number
 }
+
+const DEFAULT_COMMAND_TIMEOUT_MILLISECONDS = 5_000
 
 const paneFor = (
   session: Session,
@@ -52,18 +55,29 @@ export const makeTmuxBridge = (
   const executable = options.executable ?? 'tmux'
   const prefix =
     options.socketName === undefined ? [] : ['-L', options.socketName]
+  const commandTimeoutMilliseconds =
+    options.commandTimeoutMilliseconds ?? DEFAULT_COMMAND_TIMEOUT_MILLISECONDS
 
   const run = (args: ReadonlyArray<string>, message: string) =>
     Effect.tryPromise({
-      try: () =>
+      try: (signal) =>
         new Promise<void>((resolve, reject) => {
-          execFile(executable, [...prefix, ...args], (cause) => {
-            if (cause === null) {
-              resolve()
-            } else {
-              reject(cause)
+          execFile(
+            executable,
+            [...prefix, ...args],
+            {
+              killSignal: 'SIGKILL',
+              signal,
+              timeout: commandTimeoutMilliseconds,
+            },
+            (cause) => {
+              if (cause === null) {
+                resolve()
+              } else {
+                reject(cause)
+              }
             }
-          })
+          )
         }),
       catch: (cause) => new TmuxBridgeError({ message, cause }),
     })

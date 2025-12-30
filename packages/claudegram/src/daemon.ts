@@ -5,6 +5,7 @@ import { dirname, extname, join } from 'node:path'
 import type * as HttpClient from '@effect/platform/HttpClient'
 import * as Data from 'effect/Data'
 import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
 
 import { Config, type ClaudegramConfig } from './config'
 import { loadDaemonSnapshot, writeDaemonSnapshot } from './daemon-state'
@@ -400,7 +401,7 @@ export const runDaemon = (
           Effect.provideService(TopicManager, topics),
         )
 
-      yield* Effect.forkScoped(
+      const pollingFiber = yield* Effect.forkScoped(
         runTelegramPolling((update) =>
           provideRuntimeServices(handleTelegramUpdate(update)),
         ).pipe(Effect.provideService(TelegramApi, api)),
@@ -420,7 +421,7 @@ export const runDaemon = (
         ),
       )
 
-      yield* waitForSignal()
+      yield* Effect.raceFirst(waitForSignal(), Fiber.join(pollingFiber))
     }),
   ).pipe(
     Effect.mapError((cause) =>
