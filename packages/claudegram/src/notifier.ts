@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 
 import * as Context from 'effect/Context'
 import * as Data from 'effect/Data'
@@ -61,6 +61,10 @@ export type PendingTelegramAction =
       readonly sessionId: string
       readonly text: string
     }
+  | {
+      readonly type: 'next-question'
+      readonly sessionId: string
+    }
 
 export interface NotifyResult {
   readonly sent: boolean
@@ -78,7 +82,8 @@ export interface NotifierService {
   ) => Effect.Effect<NotifyResult, NotifierError>
   readonly resolveCallback: (
     callbackData: string,
-  ) => Effect.Effect<Option.Option<PendingTelegramAction>>
+    sessionId: string,
+  ) => Effect.Effect<Option.Option<PendingTelegramAction>, NotifierError>
 }
 
 export class Notifier extends Context.Tag('@claudegram/Notifier')<
@@ -95,6 +100,40 @@ interface OutboundNotification {
   readonly text: string
   readonly replyMarkup?: InlineKeyboardMarkup
 }
+
+type Question =
+  typeof AskUserQuestionEventSchema.Type['tool_input']['questions'][number]
+
+type PendingCallbackAction =
+  | Extract<PendingTelegramAction, { readonly type: 'permission' }>
+  | {
+      readonly type: 'question'
+      readonly sessionId: string
+      readonly threadId: number
+      readonly questions: ReadonlyArray<Question>
+      readonly answers: ReadonlyArray<string>
+      readonly questionIndex: number
+      readonly answer: string
+    }
+
+interface PendingCallback {
+  readonly interactionId: string
+  readonly expiresAt: number
+  readonly action: PendingCallbackAction
+}
+
+interface CallbackResolution {
+  readonly action: PendingTelegramAction
+  readonly nextNotification?: OutboundNotification & {
+    readonly threadId: number
+  }
+}
+
+export interface NotifierOptions {
+  readonly now?: () => Date
+}
+
+const CALLBACK_TTL_MILLISECONDS = 15 * 60 * 1000
 
 const truncate = (value: string, maximum: number): string => {
   const characters = Array.from(value)
@@ -125,15 +164,6 @@ const summarizeTool = (event: typeof ToolEventSchema.Type): string => {
     : `${event.tool_name}: ${truncate(detail, 320)}`
 }
 
-const callbackToken = (action: PendingTelegramAction): string => {
-  const kind = action.type === 'permission' ? 'p' : 'r'
-  const digest = createHash('sha256')
-    .update(JSON.stringify(action))
-    .digest('base64url')
-    .slice(0, 18)
-  return `cgm:${kind}:${digest}`
-}
-
 const mapNotifierError = (message: string) => (cause: unknown) =>
   cause instanceof NotifierError
     ? cause
@@ -144,15 +174,56 @@ const decodeOption = <A, I>(
   event: HookEvent,
 ): Option.Option<A> => Schema.decodeUnknownOption(schema)(event)
 
-export const makeNotifier = Effect.gen(function* () {
+const questionText = (
+  question: Question,
+  index: number,
+  total: number,
+): string =>
+  total === 1
+    ? `❓ ${question.question}`
+    : `❓ ${index + 1}/${total} ${question.question}`
+
+const questionReply = (
+  questions: ReadonlyArray<Question>,
+  answers: ReadonlyArray<string>,
+): string =>
+  questions.length === 1
+    ? (answers[0] ?? '')
+    : answers.map((answer, index) => `${index + 1}. ${answer}`).join('; ')
+
+const questionActions = (
+  sessionId: string,
+  threadId: number,
+  questions: ReadonlyArray<Question>,
+  answers: ReadonlyArray<string>,
+  questionIndex: number,
+): ReadonlyArray<PendingCallbackAction> => {
+  const question = questions[questionIndex]
+  return (
+    question?.options.map((option) => ({
+      type: 'question' as const,
+      sessionId,
+      threadId,
+      questions,
+      answers,
+      questionIndex,
+      answer: option.label,
+    })) ?? []
+  )
+}
+
+export const makeNotifierWithOptions = (
+  options: NotifierOptions = {},
+) => Effect.gen(function* () {
   const config = yield* Config
   const api = yield* TelegramApi
   const registry = yield* SessionRegistry
   const topics = yield* TopicManager
   const muteRules = yield* ToolMuteRules
-  const pendingActions = yield* Ref.make<
-    ReadonlyMap<string, PendingTelegramAction>
-  >(new Map())
+  const pendingActions = yield* Ref.make<ReadonlyMap<string, PendingCallback>>(
+    new Map(),
+  )
+  const now = options.now ?? (() => new Date())
 
   if (config.chatId === undefined) {
     return yield* new NotifierError({
@@ -162,50 +233,103 @@ export const makeNotifier = Effect.gen(function* () {
 
   const chatId = config.chatId
 
+  const issueActions = (
+    actions: ReadonlyArray<PendingCallbackAction>,
+    issuedAt: Date,
+    interactionId = randomUUID(),
+  ): {
+    readonly entries: ReadonlyArray<readonly [string, PendingCallback]>
+    readonly tokens: ReadonlyArray<string>
+  } => {
+    const kind = actions[0]?.type === 'permission' ? 'p' : 'q'
+    const expiresAt = issuedAt.getTime() + CALLBACK_TTL_MILLISECONDS
+    const entries = actions.map(
+      (action, index) =>
+        [
+          `cgm:${kind}:${interactionId}:${index}`,
+          { interactionId, expiresAt, action },
+        ] as const,
+    )
+    return { entries, tokens: entries.map(([token]) => token) }
+  }
+
   const registerActions = (
-    actions: ReadonlyArray<PendingTelegramAction>,
+    actions: ReadonlyArray<PendingCallbackAction>,
+    invalidatePermissionForSession = false,
   ): Effect.Effect<ReadonlyArray<string>> => {
-    const entries = actions.map((action) => [callbackToken(action), action] as const)
+    const issuedAt = now()
+    const { entries, tokens } = issueActions(actions, issuedAt)
     return Ref.update(pendingActions, (current) => {
-      const next = new Map(current)
-      for (const [token, action] of entries) {
-        next.set(token, action)
+      const next = new Map<string, PendingCallback>()
+      const sessionId = actions[0]?.sessionId
+      for (const [token, pending] of current) {
+        if (pending.expiresAt <= issuedAt.getTime()) {
+          continue
+        }
+        if (
+          invalidatePermissionForSession &&
+          pending.action.type === 'permission' &&
+          pending.action.sessionId === sessionId
+        ) {
+          continue
+        }
+        next.set(token, pending)
+      }
+      for (const [token, pending] of entries) {
+        next.set(token, pending)
       }
       return next
-    }).pipe(Effect.as(entries.map(([token]) => token)))
+    }).pipe(Effect.as(tokens))
+  }
+
+  const questionNotification = (
+    questions: ReadonlyArray<Question>,
+    questionIndex: number,
+    tokens: ReadonlyArray<string>,
+  ): OutboundNotification => {
+    const question = questions[questionIndex]
+    if (question === undefined) {
+      return { text: '' }
+    }
+
+    return {
+      text: questionText(question, questionIndex, questions.length),
+      replyMarkup: {
+        inline_keyboard: question.options.map((option, index) => [
+          {
+            text: truncate(option.label, 40),
+            callback_data: tokens[index] ?? '',
+          },
+        ]),
+      },
+    }
   }
 
   const permissionNotification = (
     event: HookEvent,
     sessionId: string,
+    threadId: number,
   ): Effect.Effect<Option.Option<OutboundNotification>> =>
     Effect.gen(function* () {
       const question = decodeOption(AskUserQuestionEventSchema, event)
       if (Option.isSome(question)) {
-        const first = question.value.tool_input.questions[0]
-        if (first === undefined || first.options.length === 0) {
+        const questions = question.value.tool_input.questions
+        if (
+          questions.length === 0 ||
+          questions.some(({ options }) => options.length === 0)
+        ) {
           return Option.none()
         }
 
-        const actions = first.options.map(
-          (option): PendingTelegramAction => ({
-            type: 'reply',
-            sessionId,
-            text: option.label,
-          }),
+        const actions = questionActions(
+          sessionId,
+          threadId,
+          questions,
+          [],
+          0,
         )
         const tokens = yield* registerActions(actions)
-        return Option.some({
-          text: `❓ ${first.question}`,
-          replyMarkup: {
-            inline_keyboard: first.options.map((option, index) => [
-              {
-                text: truncate(option.label, 40),
-                callback_data: tokens[index] ?? '',
-              },
-            ]),
-          },
-        })
+        return Option.some(questionNotification(questions, 0, tokens))
       }
 
       const tool = decodeOption(ToolEventSchema, event)
@@ -213,7 +337,7 @@ export const makeNotifier = Effect.gen(function* () {
         return Option.none()
       }
 
-      const actions: ReadonlyArray<PendingTelegramAction> = (
+      const actions: ReadonlyArray<PendingCallbackAction> = (
         ['allow', 'deny'] as const
       ).map((decision) => ({
         type: 'permission',
@@ -223,7 +347,10 @@ export const makeNotifier = Effect.gen(function* () {
           : { toolUseId: tool.value.tool_use_id }),
         decision,
       }))
-      const [allowToken = '', denyToken = ''] = yield* registerActions(actions)
+      const [allowToken = '', denyToken = ''] = yield* registerActions(
+        actions,
+        true,
+      )
 
       return Option.some({
         text: `🔐 Permission requested\n${summarizeTool(tool.value)}`,
@@ -241,6 +368,7 @@ export const makeNotifier = Effect.gen(function* () {
   const notificationFor = (
     event: HookEvent,
     sessionId: string,
+    threadId: number,
   ): Effect.Effect<Option.Option<OutboundNotification>> => {
     switch (event.hook_event_name) {
       case 'Notification': {
@@ -267,7 +395,7 @@ export const makeNotifier = Effect.gen(function* () {
       }
       case 'PreToolUse':
       case 'PermissionRequest': {
-        return permissionNotification(event, sessionId)
+        return permissionNotification(event, sessionId, threadId)
       }
       case 'PostToolUse':
       case 'PostToolUseFailure': {
@@ -317,6 +445,7 @@ export const makeNotifier = Effect.gen(function* () {
         const notification = yield* notificationFor(
           envelope.event,
           session.id,
+          topic.threadId,
         )
         if (Option.isNone(notification)) {
           return {
@@ -343,18 +472,111 @@ export const makeNotifier = Effect.gen(function* () {
       }).pipe(
         Effect.mapError(mapNotifierError('failed to deliver hook notification')),
       ),
-    resolveCallback: (callbackData) =>
-      Ref.modify(pendingActions, (current) => {
-        const action = current.get(callbackData)
-        if (action === undefined) {
-          return [Option.none(), current] as const
+    resolveCallback: (callbackData, sessionId) =>
+      Effect.gen(function* () {
+        const resolvedAt = now()
+        const nextInteractionId = randomUUID()
+        const resolution = yield* Ref.modify(pendingActions, (current) => {
+          const pending = current.get(callbackData)
+          if (pending === undefined) {
+            return [Option.none(), current] as const
+          }
+
+          if (pending.action.sessionId !== sessionId) {
+            return [Option.none(), current] as const
+          }
+
+          const next = new Map<string, PendingCallback>()
+          for (const [token, candidate] of current) {
+            if (
+              candidate.expiresAt > resolvedAt.getTime() &&
+              candidate.interactionId !== pending.interactionId
+            ) {
+              next.set(token, candidate)
+            }
+          }
+
+          if (pending.expiresAt <= resolvedAt.getTime()) {
+            return [Option.none(), next] as const
+          }
+
+          if (pending.action.type === 'permission') {
+            return [
+              Option.some<CallbackResolution>({ action: pending.action }),
+              next,
+            ] as const
+          }
+
+          const answers = [...pending.action.answers, pending.action.answer]
+          const nextQuestionIndex = pending.action.questionIndex + 1
+          if (nextQuestionIndex >= pending.action.questions.length) {
+            return [
+              Option.some<CallbackResolution>({
+                action: {
+                  type: 'reply',
+                  sessionId,
+                  text: questionReply(pending.action.questions, answers),
+                },
+              }),
+              next,
+            ] as const
+          }
+
+          const actions = questionActions(
+            sessionId,
+            pending.action.threadId,
+            pending.action.questions,
+            answers,
+            nextQuestionIndex,
+          )
+          const issued = issueActions(
+            actions,
+            resolvedAt,
+            nextInteractionId,
+          )
+          for (const [token, candidate] of issued.entries) {
+            next.set(token, candidate)
+          }
+
+          return [
+            Option.some<CallbackResolution>({
+              action: { type: 'next-question', sessionId },
+              nextNotification: {
+                ...questionNotification(
+                  pending.action.questions,
+                  nextQuestionIndex,
+                  issued.tokens,
+                ),
+                threadId: pending.action.threadId,
+              },
+            }),
+            next,
+          ] as const
+        })
+
+        if (Option.isNone(resolution)) {
+          return Option.none()
         }
 
-        const next = new Map(current)
-        next.delete(callbackData)
-        return [Option.some(action), next] as const
-      }),
+        if (resolution.value.nextNotification !== undefined) {
+          const notification = resolution.value.nextNotification
+          yield* api.sendMessage({
+            chatId,
+            messageThreadId: notification.threadId,
+            text: notification.text,
+            ...(notification.replyMarkup === undefined
+              ? {}
+              : { replyMarkup: notification.replyMarkup }),
+          })
+        }
+
+        return Option.some(resolution.value.action)
+      }).pipe(
+        Effect.mapError(mapNotifierError('failed to resolve callback action')),
+      ),
   })
 })
+
+export const makeNotifier = makeNotifierWithOptions()
 
 export const NotifierLive = Layer.effect(Notifier, makeNotifier)

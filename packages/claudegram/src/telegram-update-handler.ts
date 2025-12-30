@@ -45,6 +45,10 @@ const applyAction = (
 ): Effect.Effect<void, unknown, TmuxBridge> =>
   Effect.gen(function* () {
     const tmux = yield* TmuxBridge
+    if (action.type === 'next-question') {
+      return
+    }
+
     if (action.type === 'reply') {
       yield* tmux.sendText(session, action.text)
       return
@@ -110,9 +114,16 @@ export const handleTelegramUpdate = (
     const session = yield* sessionForThread(
       callback.message.message_thread_id,
     )
-    const action = yield* notifier.resolveCallback(callback.data)
+    if (Option.isNone(session)) {
+      yield* api.answerCallbackQuery(callback.id, 'This action has expired.')
+      return
+    }
+
+    const action = yield* notifier.resolveCallback(
+      callback.data,
+      session.value.id,
+    )
     if (
-      Option.isNone(session) ||
       Option.isNone(action) ||
       action.value.sessionId !== session.value.id
     ) {
@@ -121,7 +132,12 @@ export const handleTelegramUpdate = (
     }
 
     yield* applyAction(session.value, action.value)
-    yield* api.answerCallbackQuery(callback.id, 'Sent to Claude.')
+    yield* api.answerCallbackQuery(
+      callback.id,
+      action.value.type === 'next-question'
+        ? 'Answer saved.'
+        : 'Sent to Claude.',
+    )
   }).pipe(
     Effect.mapError(mapUpdateError(`failed to handle Telegram update ${update.update_id}`)),
   )

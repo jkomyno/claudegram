@@ -10,17 +10,21 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   type ClaudegramConfig,
   Config,
+  handleTelegramUpdate,
   makeHookEnvelope,
-  makeNotifier,
+  makeNotifierWithOptions,
   makeSessionRegistry,
   makeTelegramApi,
   makeTopicManager,
+  type NotifierOptions,
+  Notifier,
   parseHookEvent,
   pollTelegramOnce,
   runTelegramPolling,
   SessionRegistry,
   TelegramApi,
   TelegramApiError,
+  TmuxBridge,
   ToolMuteRules,
   TopicManager,
 } from '../../src'
@@ -179,7 +183,10 @@ const eventEnvelope = (
     new Date(sentAt),
   )
 
-const makeTestServices = async (fake: FakeTelegram) => {
+const makeTestServices = async (
+  fake: FakeTelegram,
+  notifierOptions: NotifierOptions = {},
+) => {
   const api = await Effect.runPromise(
     makeTelegramApi({
       botToken: 'fake-token',
@@ -198,7 +205,7 @@ const makeTestServices = async (fake: FakeTelegram) => {
     isMuted: (event) => Effect.succeed(event.tool_name === 'Read'),
   })
   const notifier = await Effect.runPromise(
-    makeNotifier.pipe(
+    makeNotifierWithOptions(notifierOptions).pipe(
       Effect.provideService(Config, config),
       Effect.provideService(TelegramApi, api),
       Effect.provideService(SessionRegistry, registry),
@@ -354,9 +361,10 @@ describe('Telegram bridge', () => {
       >
     }
     const allowCallback = permissionMarkup.inline_keyboard[0]?.[0]?.callback_data
+    const denyCallback = permissionMarkup.inline_keyboard[0]?.[1]?.callback_data
     expect(allowCallback).toMatch(/^cgm:p:/u)
     const permissionAction = await Effect.runPromise(
-      notifier.resolveCallback(allowCallback ?? ''),
+      notifier.resolveCallback(allowCallback ?? '', firstSession),
     )
     expect(Option.getOrThrow(permissionAction)).toMatchObject({
       type: 'permission',
@@ -366,7 +374,16 @@ describe('Telegram bridge', () => {
     })
     expect(
       Option.isNone(
-        await Effect.runPromise(notifier.resolveCallback(allowCallback ?? '')),
+        await Effect.runPromise(
+          notifier.resolveCallback(allowCallback ?? '', firstSession),
+        ),
+      ),
+    ).toBe(true)
+    expect(
+      Option.isNone(
+        await Effect.runPromise(
+          notifier.resolveCallback(denyCallback ?? '', firstSession),
+        ),
       ),
     ).toBe(true)
 
@@ -377,13 +394,208 @@ describe('Telegram bridge', () => {
     }
     const replyCallback = questionMarkup.inline_keyboard[0]?.[0]?.callback_data
     const replyAction = await Effect.runPromise(
-      notifier.resolveCallback(replyCallback ?? ''),
+      notifier.resolveCallback(replyCallback ?? '', firstSession),
     )
     expect(Option.getOrThrow(replyAction)).toEqual({
       type: 'reply',
       sessionId: firstSession,
       text: 'Stable',
     })
+  })
+
+  it('invalidates replaced, sibling, and expired callback buttons', async () => {
+    const fake = await startFakeTelegram()
+    let currentTime = Date.parse('2026-08-13T12:00:00.000Z')
+    const { notifier } = await makeTestServices(fake, {
+      now: () => new Date(currentTime),
+    })
+    const sessionId = 'session-callbacks'
+    const permission = () =>
+      notifier.notify(
+        eventEnvelope(sessionId, {
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_use_id: 'tool-reused',
+          tool_input: { command: 'pnpm test' },
+        }),
+      )
+
+    await Effect.runPromise(permission())
+    const firstCall = fake.calls.find((call) => call.method === 'sendMessage')
+    const firstMarkup = firstCall?.body.reply_markup as {
+      readonly inline_keyboard: ReadonlyArray<
+        ReadonlyArray<{ readonly callback_data: string }>
+      >
+    }
+    const firstAllow = firstMarkup.inline_keyboard[0]?.[0]?.callback_data ?? ''
+    const firstDeny = firstMarkup.inline_keyboard[0]?.[1]?.callback_data ?? ''
+
+    await Effect.runPromise(permission())
+    const sendCalls = fake.calls.filter((call) => call.method === 'sendMessage')
+    const secondMarkup = sendCalls[1]?.body.reply_markup as {
+      readonly inline_keyboard: ReadonlyArray<
+        ReadonlyArray<{ readonly callback_data: string }>
+      >
+    }
+    const secondAllow = secondMarkup.inline_keyboard[0]?.[0]?.callback_data ?? ''
+    const secondDeny = secondMarkup.inline_keyboard[0]?.[1]?.callback_data ?? ''
+
+    expect(secondAllow).not.toBe(firstAllow)
+    expect(
+      Option.isNone(
+        await Effect.runPromise(
+          notifier.resolveCallback(firstAllow, sessionId),
+        ),
+      ),
+    ).toBe(true)
+    expect(
+      Option.isNone(
+        await Effect.runPromise(notifier.resolveCallback(firstDeny, sessionId)),
+      ),
+    ).toBe(true)
+    expect(
+      Option.isNone(
+        await Effect.runPromise(
+          notifier.resolveCallback(secondAllow, 'another-session'),
+        ),
+      ),
+    ).toBe(true)
+    expect(
+      Option.getOrThrow(
+        await Effect.runPromise(
+          notifier.resolveCallback(secondAllow, sessionId),
+        ),
+      ),
+    ).toMatchObject({ decision: 'allow', sessionId })
+    expect(
+      Option.isNone(
+        await Effect.runPromise(
+          notifier.resolveCallback(secondDeny, sessionId),
+        ),
+      ),
+    ).toBe(true)
+
+    await Effect.runPromise(permission())
+    const thirdCall = fake.calls
+      .filter((call) => call.method === 'sendMessage')
+      .at(-1)
+    const thirdMarkup = thirdCall?.body.reply_markup as {
+      readonly inline_keyboard: ReadonlyArray<
+        ReadonlyArray<{ readonly callback_data: string }>
+      >
+    }
+    const thirdAllow = thirdMarkup.inline_keyboard[0]?.[0]?.callback_data ?? ''
+    currentTime += 15 * 60 * 1000
+
+    expect(
+      Option.isNone(
+        await Effect.runPromise(
+          notifier.resolveCallback(thirdAllow, sessionId),
+        ),
+      ),
+    ).toBe(true)
+  })
+
+  it('asks multiple questions in order and submits one combined reply', async () => {
+    const fake = await startFakeTelegram()
+    const { api, notifier, registry, topics } = await makeTestServices(fake)
+    const sessionId = 'session-questions'
+    const tmuxCalls: Array<{ readonly sessionId: string; readonly text: string }> =
+      []
+    const tmux = TmuxBridge.of({
+      sendText: (session, text) =>
+        Effect.sync(() => {
+          tmuxCalls.push({ sessionId: session.id, text })
+        }),
+      interrupt: () => Effect.void,
+    })
+
+    await Effect.runPromise(
+      notifier.notify(
+        eventEnvelope(sessionId, {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'AskUserQuestion',
+          tool_input: {
+            questions: [
+              {
+                question: 'Which release channel?',
+                options: [{ label: 'Stable' }, { label: 'Beta' }],
+              },
+              {
+                question: 'Which region?',
+                options: [{ label: 'Europe' }, { label: 'US' }],
+              },
+            ],
+          },
+        }),
+      ),
+    )
+
+    const runCallback = (
+      updateId: number,
+      callbackId: string,
+      callbackData: string,
+      threadId: number,
+    ) =>
+      Effect.runPromise(
+        handleTelegramUpdate({
+          update_id: updateId,
+          callback_query: {
+            id: callbackId,
+            data: callbackData,
+            message: {
+              message_id: updateId,
+              message_thread_id: threadId,
+              chat: { id: -100123, type: 'supergroup', is_forum: true },
+            },
+          },
+        }).pipe(
+          Effect.provideService(Config, config),
+          Effect.provideService(Notifier, notifier),
+          Effect.provideService(SessionRegistry, registry),
+          Effect.provideService(TelegramApi, api),
+          Effect.provideService(TmuxBridge, tmux),
+          Effect.provideService(TopicManager, topics),
+        ),
+      )
+
+    const firstSend = fake.calls.find((call) => call.method === 'sendMessage')
+    const threadId = firstSend?.body.message_thread_id as number
+    const firstMarkup = firstSend?.body.reply_markup as {
+      readonly inline_keyboard: ReadonlyArray<
+        ReadonlyArray<{ readonly callback_data: string }>
+      >
+    }
+    const stableCallback =
+      firstMarkup.inline_keyboard[0]?.[0]?.callback_data ?? ''
+
+    await runCallback(1, 'callback-stable', stableCallback, threadId)
+    expect(tmuxCalls).toEqual([])
+
+    const sendCalls = fake.calls.filter((call) => call.method === 'sendMessage')
+    const secondSend = sendCalls[1]
+    const secondMarkup = secondSend?.body.reply_markup as {
+      readonly inline_keyboard: ReadonlyArray<
+        ReadonlyArray<{ readonly callback_data: string }>
+      >
+    }
+    const europeCallback =
+      secondMarkup.inline_keyboard[0]?.[0]?.callback_data ?? ''
+
+    await runCallback(2, 'callback-europe', europeCallback, threadId)
+
+    expect(sendCalls.map((call) => call.body.text)).toEqual([
+      '❓ 1/2 Which release channel?',
+      '❓ 2/2 Which region?',
+    ])
+    expect(tmuxCalls).toEqual([
+      { sessionId, text: '1. Stable; 2. Europe' },
+    ])
+    expect(
+      fake.calls
+        .filter((call) => call.method === 'answerCallbackQuery')
+        .map((call) => call.body.text),
+    ).toEqual(['Answer saved.', 'Sent to Claude.'])
   })
 
   it('long-polls updates and advances the offset', async () => {

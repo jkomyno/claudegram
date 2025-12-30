@@ -81,6 +81,14 @@ describe('handleTelegramUpdate', () => {
         'cgm:r:reply',
         { type: 'reply', sessionId: session.id, text: 'Stable' } as const,
       ],
+      [
+        'cgm:p:wrong-session',
+        {
+          type: 'permission',
+          sessionId: 'session-2',
+          decision: 'allow',
+        } as const,
+      ],
     ])
     const notifier = Notifier.of({
       notify: () =>
@@ -164,8 +172,20 @@ describe('handleTelegramUpdate', () => {
     })
     await runUpdate({
       update_id: 5,
+      callback_query: {
+        id: 'callback-wrong-session',
+        data: 'cgm:p:wrong-session',
+        message: {
+          message_id: 5,
+          message_thread_id: 101,
+          chat: { id: -100123, type: 'supergroup', is_forum: true },
+        },
+      },
+    })
+    await runUpdate({
+      update_id: 6,
       message: {
-        message_id: 5,
+        message_id: 6,
         message_thread_id: 101,
         text: 'wrong chat',
         chat: { id: -100999, type: 'supergroup', is_forum: true },
@@ -181,6 +201,7 @@ describe('handleTelegramUpdate', () => {
     expect(callbackAnswers).toEqual([
       { id: 'callback-allow', text: 'Sent to Claude.' },
       { id: 'callback-reply', text: 'Sent to Claude.' },
+      { id: 'callback-wrong-session', text: 'This action has expired.' },
     ])
   })
 })
