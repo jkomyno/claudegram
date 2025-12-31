@@ -14,6 +14,7 @@ import {
   makeHookEnvelope,
   parseHookEventJson,
   readDaemonLogs,
+  restartDaemon,
   runDaemon,
   runDoctor,
   runSetupWizard,
@@ -123,9 +124,7 @@ const restartCommand = Command.make('restart').pipe(
   Command.withDescription('Stop and start the daemon.'),
   Command.withHandler(() =>
     Effect.gen(function* () {
-      const config = yield* loadConfig()
-      yield* stopDaemon(config)
-      const state = yield* startDaemon(config)
+      const state = yield* restartDaemon(yield* loadConfig())
       yield* print(`Daemon ${state.status}${'pid' in state ? ` (pid ${state.pid})` : ''}.`)
     }),
   ),
