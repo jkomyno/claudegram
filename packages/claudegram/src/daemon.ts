@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { mkdir, open, readFile, unlink, writeFile } from 'node:fs/promises'
 import { dirname, extname, join } from 'node:path'
@@ -6,6 +7,8 @@ import type * as HttpClient from '@effect/platform/HttpClient'
 import * as Data from 'effect/Data'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
+import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 
 import { Config, type ClaudegramConfig } from './config'
 import {
@@ -13,7 +16,7 @@ import {
   loadDaemonSnapshot,
   writeDaemonSnapshot,
 } from './daemon-state'
-import { startHookIngress } from './hook-ingress'
+import { probeHookIngress, startHookIngress } from './hook-ingress'
 import { isMissingFile } from './node-errors'
 import { makeNotifier, Notifier } from './notifier'
 import {
@@ -57,6 +60,18 @@ export class DaemonError extends Data.TaggedError('DaemonError')<{
 
 export interface DaemonControlOptions {
   readonly service?: ServiceInstallOptions
+  readonly launchDaemon?: (command: DaemonLaunchCommand) => Promise<void>
+  readonly signalProcess?: (pid: number, signal: NodeJS.Signals) => void
+  readonly waitForState?: (
+    config: ClaudegramConfig,
+    expected: 'running' | 'stopped',
+  ) => Promise<DaemonState>
+}
+
+export interface DaemonLaunchCommand {
+  readonly executable: string
+  readonly arguments: ReadonlyArray<string>
+  readonly logPath: string
 }
 
 export const daemonPaths = (config: ClaudegramConfig): DaemonPaths => {
@@ -69,10 +84,43 @@ export const daemonPaths = (config: ClaudegramConfig): DaemonPaths => {
   }
 }
 
-const readPid = async (pidPath: string): Promise<number | undefined> => {
+interface DaemonIdentity {
+  readonly pid: number
+  readonly token?: string
+}
+
+const ProcessIdSchema = Schema.Number.pipe(
+  Schema.int(),
+  Schema.positive(),
+  Schema.filter(Number.isSafeInteger, {
+    description: 'a safe positive process id',
+  }),
+)
+
+const DaemonIdentityJsonSchema = Schema.parseJson(
+  Schema.Struct({
+    pid: ProcessIdSchema,
+    token: Schema.NonEmptyString,
+  }),
+)
+const LegacyPidSchema = Schema.NumberFromString.pipe(
+  Schema.int(),
+  Schema.positive(),
+  Schema.filter(Number.isSafeInteger, {
+    description: 'a safe positive process id',
+  }),
+)
+
+const readDaemonIdentity = async (
+  pidPath: string,
+): Promise<DaemonIdentity | undefined> => {
   try {
-    const pid = Number((await readFile(pidPath, 'utf8')).trim())
-    return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined
+    const content = (await readFile(pidPath, 'utf8')).trim()
+    const current = Schema.decodeUnknownOption(DaemonIdentityJsonSchema)(content)
+    if (Option.isSome(current)) return current.value
+
+    const legacy = Schema.decodeUnknownOption(LegacyPidSchema)(content)
+    return Option.isSome(legacy) ? { pid: legacy.value } : undefined
   } catch (cause) {
     if (isMissingFile(cause)) {
       return undefined
@@ -95,23 +143,40 @@ const pidIsAlive = (pid: number): boolean => {
   }
 }
 
+const inspectDaemonWithIdentity = async (
+  config: ClaudegramConfig,
+): Promise<{
+  readonly state: DaemonState
+  readonly identity?: DaemonIdentity
+}> => {
+  const identity = await readDaemonIdentity(daemonPaths(config).pidPath)
+  if (identity === undefined) return { state: { status: 'stopped' } }
+  if (!pidIsAlive(identity.pid)) {
+    return { state: { status: 'stopped', pid: identity.pid }, identity }
+  }
+  if (identity.token === undefined) {
+    return { state: { status: 'degraded', pid: identity.pid }, identity }
+  }
+
+  const verified = await Effect.runPromise(
+    probeHookIngress(config.socketPath, identity.token).pipe(
+      Effect.as(true),
+      Effect.catchAll(() => Effect.succeed(false)),
+    ),
+  )
+  return {
+    state: verified
+      ? { status: 'running', pid: identity.pid }
+      : { status: 'degraded', pid: identity.pid },
+    identity,
+  }
+}
+
 export const inspectDaemon = (
   config: ClaudegramConfig,
 ): Effect.Effect<DaemonState, DaemonError> =>
   Effect.tryPromise({
-    try: async () => {
-      const pid = await readPid(daemonPaths(config).pidPath)
-      if (pid === undefined) {
-        return { status: 'stopped' } as const
-      }
-      if (!pidIsAlive(pid)) {
-        return { status: 'stopped', pid } as const
-      }
-
-      return (await socketIsAlive(config.socketPath))
-        ? ({ status: 'running', pid } as const)
-        : ({ status: 'degraded', pid } as const)
-    },
+    try: async () => (await inspectDaemonWithIdentity(config)).state,
     catch: (cause) =>
       new DaemonError({ message: 'failed to inspect daemon state', cause }),
   })
@@ -147,6 +212,39 @@ const launchCommand = (): {
   return { executable: process.execPath, arguments: ['daemon'] }
 }
 
+const launchDetachedDaemon = async (
+  command: DaemonLaunchCommand,
+): Promise<void> => {
+  const output = await open(command.logPath, 'a', 0o600)
+  try {
+    const child = spawn(command.executable, command.arguments, {
+      detached: true,
+      env: process.env,
+      stdio: ['ignore', output.fd, output.fd],
+    })
+    child.unref()
+  } finally {
+    await output.close()
+  }
+}
+
+const removeIdentityIfMatches = async (
+  pidPath: string,
+  expected: DaemonIdentity | undefined,
+): Promise<void> => {
+  if (expected === undefined) return
+  const current = await readDaemonIdentity(pidPath)
+  if (
+    current?.pid !== expected.pid ||
+    current.token !== expected.token
+  ) {
+    return
+  }
+  await unlink(pidPath).catch((cause) => {
+    if (!isMissingFile(cause)) throw cause
+  })
+}
+
 export const startDaemon = (
   config: ClaudegramConfig,
   options: DaemonControlOptions = {},
@@ -159,17 +257,19 @@ export const startDaemon = (
         })
       }
 
-      const current = await Effect.runPromise(inspectDaemon(config))
+      const inspected = await inspectDaemonWithIdentity(config)
+      const current = inspected.state
       if (current.status === 'running') {
         return current
       }
 
       const paths = daemonPaths(config)
+      const wait = options.waitForState ?? waitForState
       const managed = await Effect.runPromise(
         controlInstalledService('start', options.service),
       )
       if (managed) {
-        const state = await waitForState(config, 'running')
+        const state = await wait(config, 'running')
         if (state.status !== 'running') {
           throw new DaemonError({
             message: `managed daemon did not become ready; inspect ${paths.logPath}`,
@@ -179,22 +279,16 @@ export const startDaemon = (
       }
 
       if (current.status === 'degraded') {
-        await unlink(paths.pidPath).catch((cause) => {
-          if (!isMissingFile(cause)) throw cause
-        })
+        await removeIdentityIfMatches(paths.pidPath, inspected.identity)
       }
       await mkdir(paths.stateDirectory, { recursive: true, mode: 0o700 })
-      const output = await open(paths.logPath, 'a', 0o600)
       const command = launchCommand()
-      const child = spawn(command.executable, command.arguments, {
-        detached: true,
-        env: process.env,
-        stdio: ['ignore', output.fd, output.fd],
+      await (options.launchDaemon ?? launchDetachedDaemon)({
+        ...command,
+        logPath: paths.logPath,
       })
-      child.unref()
-      await output.close()
 
-      const state = await waitForState(config, 'running')
+      const state = await wait(config, 'running')
       if (state.status !== 'running') {
         throw new DaemonError({
           message: `daemon did not become ready; inspect ${paths.logPath}`,
@@ -215,37 +309,41 @@ export const stopDaemon = (
   Effect.tryPromise({
     try: async () => {
       const paths = daemonPaths(config)
+      const inspected = await inspectDaemonWithIdentity(config)
+      const identity = inspected.identity
+      const wait = options.waitForState ?? waitForState
       const managed = await Effect.runPromise(
         controlInstalledService('stop', options.service),
       )
       if (managed) {
-        const state = await waitForState(config, 'stopped')
+        const state = await wait(config, 'stopped')
         if (state.status !== 'stopped') {
           throw new DaemonError({
             message: 'managed daemon did not stop within 5 seconds',
           })
         }
+        await removeIdentityIfMatches(paths.pidPath, identity)
         return state
       }
 
-      const current = await Effect.runPromise(inspectDaemon(config))
+      const current = inspected.state
       if (current.status === 'stopped' || current.status === 'degraded') {
-        await unlink(paths.pidPath).catch((cause) => {
-          if (!isMissingFile(cause)) throw cause
-        })
+        await removeIdentityIfMatches(paths.pidPath, identity)
         return {
           status: 'stopped',
           ...('pid' in current ? { pid: current.pid } : {}),
         } as const
       }
 
-      process.kill(current.pid, 'SIGTERM')
-      const state = await waitForState(config, 'stopped')
+      const signalProcess = options.signalProcess ?? process.kill
+      signalProcess(current.pid, 'SIGTERM')
+      const state = await wait(config, 'stopped')
       if (state.status !== 'stopped') {
         throw new DaemonError({
           message: `daemon ${current.pid} did not stop within 5 seconds`,
         })
       }
+      await removeIdentityIfMatches(paths.pidPath, identity)
       return state
     },
     catch: (cause) =>
@@ -266,7 +364,10 @@ export const restartDaemon = (
       managed
         ? Effect.tryPromise({
             try: async () => {
-              const state = await waitForState(config, 'running')
+              const state = await (options.waitForState ?? waitForState)(
+                config,
+                'running',
+              )
               if (state.status !== 'running') {
                 throw new DaemonError({
                   message: 'managed daemon did not restart within 5 seconds',
@@ -342,15 +443,33 @@ export const runDaemon = (
       }
 
       const paths = daemonPaths(config)
+      const identityToken = randomUUID()
       yield* Effect.acquireRelease(
         Effect.tryPromise({
           try: async () => {
             await mkdir(paths.stateDirectory, { recursive: true, mode: 0o700 })
-            const existing = await readPid(paths.pidPath)
-            if (existing !== undefined && existing !== process.pid && pidIsAlive(existing)) {
-              throw new DaemonError({ message: `daemon ${existing} is already running` })
+            const existing = await readDaemonIdentity(paths.pidPath)
+            if (
+              existing !== undefined &&
+              existing.pid !== process.pid &&
+              pidIsAlive(existing.pid) &&
+              existing.token !== undefined &&
+              (await Effect.runPromise(
+                probeHookIngress(config.socketPath, existing.token).pipe(
+                  Effect.as(true),
+                  Effect.catchAll(() => Effect.succeed(false)),
+                ),
+              ))
+            ) {
+              throw new DaemonError({
+                message: `daemon ${existing.pid} is already running`,
+              })
             }
-            await writeFile(paths.pidPath, `${process.pid}\n`, { mode: 0o600 })
+            const encoded = Schema.encodeSync(DaemonIdentityJsonSchema)({
+              pid: process.pid,
+              token: identityToken,
+            })
+            await writeFile(paths.pidPath, `${encoded}\n`, { mode: 0o600 })
           },
           catch: (cause) =>
             cause instanceof DaemonError
@@ -358,11 +477,12 @@ export const runDaemon = (
               : new DaemonError({ message: 'failed to acquire daemon pid file', cause }),
         }),
         () =>
-          Effect.promise(() =>
-            unlink(paths.pidPath).catch((cause) => {
-              if (!isMissingFile(cause)) throw cause
-            }),
-          ),
+          Effect.promise(async () => {
+            await removeIdentityIfMatches(paths.pidPath, {
+              pid: process.pid,
+              token: identityToken,
+            })
+          }),
       )
 
       const tmux = makeTmuxBridge()
@@ -398,6 +518,7 @@ export const runDaemon = (
         ),
       )
       const ingress = yield* startHookIngress(config.socketPath, {
+        identityToken,
         onEnvelope: (envelope) =>
           notifier.notify(envelope).pipe(
             Effect.matchEffect({

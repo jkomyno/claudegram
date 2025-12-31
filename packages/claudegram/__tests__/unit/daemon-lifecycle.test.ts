@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -13,6 +13,11 @@ import {
   controlInstalledService,
   daemonPaths,
   installService,
+  makeSessionRegistry,
+  restartDaemon,
+  SessionRegistry,
+  startDaemon,
+  startHookIngress,
   stopDaemon,
 } from '../../src'
 
@@ -77,6 +82,137 @@ describe('daemon lifecycle', () => {
     } finally {
       if (child.exitCode === null) child.kill('SIGTERM')
       if (child.exitCode === null) await once(child, 'exit')
+    }
+  })
+
+  it('launches once and reports only a ready daemon as started', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'claudegram-lifecycle-'))
+    temporaryDirectories.push(directory)
+    const config = makeConfig(directory)
+    const launches: Array<Readonly<Record<string, unknown>>> = []
+
+    const state = await Effect.runPromise(
+      startDaemon(config, {
+        service: { homeDirectory: directory, platform: 'darwin' },
+        launchDaemon: async (command) => {
+          launches.push(command)
+        },
+        waitForState: async (_config, expected) => {
+          expect(expected).toBe('running')
+          return { status: 'running', pid: 12345 }
+        },
+      }),
+    )
+
+    expect(state).toEqual({ status: 'running', pid: 12345 })
+    expect(launches).toMatchObject([
+      { logPath: daemonPaths(config).logPath },
+    ])
+  })
+
+  it('fails start when the launched daemon never becomes ready', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'claudegram-lifecycle-'))
+    temporaryDirectories.push(directory)
+    const config = makeConfig(directory)
+
+    await expect(
+      Effect.runPromise(
+        startDaemon(config, {
+          service: { homeDirectory: directory, platform: 'darwin' },
+          launchDaemon: async () => undefined,
+          waitForState: async () => ({ status: 'starting', pid: 12345 }),
+        }),
+      ),
+    ).rejects.toThrow('daemon did not become ready')
+  })
+
+  it('signals a verified daemon and removes only its matching identity', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'claudegram-lifecycle-'))
+    temporaryDirectories.push(directory)
+    const config = makeConfig(directory)
+    const paths = daemonPaths(config)
+    await mkdir(paths.stateDirectory, { recursive: true })
+    const token = 'verified-daemon'
+    await writeFile(
+      paths.pidPath,
+      `${JSON.stringify({ pid: process.pid, token })}\n`,
+    )
+    const registry = await Effect.runPromise(makeSessionRegistry)
+    const ingress = await Effect.runPromise(
+      startHookIngress(config.socketPath, { identityToken: token }).pipe(
+        Effect.provideService(SessionRegistry, registry),
+      ),
+    )
+    const signals: Array<readonly [number, NodeJS.Signals]> = []
+
+    try {
+      expect(
+        await Effect.runPromise(
+          stopDaemon(config, {
+            service: { homeDirectory: directory, platform: 'darwin' },
+            signalProcess: (pid, signal) => {
+              signals.push([pid, signal])
+            },
+            waitForState: async () => ({ status: 'stopped', pid: process.pid }),
+          }),
+        ),
+      ).toEqual({ status: 'stopped', pid: process.pid })
+      expect(signals).toEqual([[process.pid, 'SIGTERM']])
+      await expect(readFile(paths.pidPath, 'utf8')).rejects.toMatchObject({
+        code: 'ENOENT',
+      })
+    } finally {
+      await Effect.runPromise(ingress.close)
+    }
+  })
+
+  it('runs the unmanaged stop and start paths during restart', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'claudegram-lifecycle-'))
+    temporaryDirectories.push(directory)
+    const config = makeConfig(directory)
+    const paths = daemonPaths(config)
+    await mkdir(paths.stateDirectory, { recursive: true })
+    const token = 'restart-daemon'
+    await writeFile(
+      paths.pidPath,
+      `${JSON.stringify({ pid: process.pid, token })}\n`,
+    )
+    const registry = await Effect.runPromise(makeSessionRegistry)
+    const ingress = await Effect.runPromise(
+      startHookIngress(config.socketPath, { identityToken: token }).pipe(
+        Effect.provideService(SessionRegistry, registry),
+      ),
+    )
+    const actions: Array<string> = []
+
+    try {
+      const state = await Effect.runPromise(
+        restartDaemon(config, {
+          service: { homeDirectory: directory, platform: 'darwin' },
+          signalProcess: () => {
+            actions.push('signal')
+          },
+          launchDaemon: async () => {
+            actions.push('launch')
+          },
+          waitForState: async (_config, expected) => {
+            actions.push(`wait:${expected}`)
+            return expected === 'stopped'
+              ? { status: 'stopped', pid: process.pid }
+              : { status: 'running', pid: 67890 }
+          },
+        }),
+      )
+
+      expect(state).toEqual({ status: 'running', pid: 67890 })
+      expect(actions).toEqual([
+        'signal',
+        'wait:stopped',
+        'launch',
+        'wait:running',
+      ])
+    } finally {
+      await Effect.runPromise(ingress.close)
     }
   })
 

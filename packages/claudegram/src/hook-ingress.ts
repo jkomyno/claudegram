@@ -5,6 +5,7 @@ import type { Server, Socket } from 'node:net'
 
 import * as Data from 'effect/Data'
 import * as Effect from 'effect/Effect'
+import * as Option from 'effect/Option'
 
 import {
   HOOK_PROTOCOL_VERSION,
@@ -12,8 +13,12 @@ import {
   type HookEnvelope,
   type HookRejection,
   type HookResponse,
+  encodeDaemonProbe,
+  encodeDaemonProbeAcknowledgement,
   encodeHookEnvelope,
   encodeHookResponse,
+  parseDaemonProbeAcknowledgement,
+  parseDaemonProbeOption,
   parseHookEnvelope,
   parseHookResponse,
 } from './protocol'
@@ -34,6 +39,7 @@ export interface RunningHookIngress {
 }
 
 export interface HookIngressOptions {
+  readonly identityToken?: string
   readonly onEnvelope?: (
     envelope: HookEnvelope,
   ) => Effect.Effect<void, unknown>
@@ -129,7 +135,7 @@ const listen = (server: Server, socketPath: string): Promise<void> =>
 const handleConnection = (
   socket: Socket,
   record: (envelope: HookEnvelope) => Effect.Effect<unknown>,
-  onEnvelope?: HookIngressOptions['onEnvelope'],
+  options: HookIngressOptions,
 ): void => {
   let buffer = ''
   let handled = false
@@ -156,11 +162,30 @@ const handleConnection = (
     const line = buffer.slice(0, newline)
 
     try {
+      const probe = parseDaemonProbeOption(line)
+      if (Option.isSome(probe)) {
+        if (
+          options.identityToken === undefined ||
+          probe.value.token !== options.identityToken
+        ) {
+          socket.end(encodeResponse(rejection('daemon identity did not match')))
+          return
+        }
+        socket.end(
+          `${encodeDaemonProbeAcknowledgement({
+            type: 'probe-ack',
+            version: HOOK_PROTOCOL_VERSION,
+            token: options.identityToken,
+          })}\n`,
+        )
+        return
+      }
+
       const envelope = parseHookEnvelope(line)
       const handle =
-        onEnvelope === undefined
+        options.onEnvelope === undefined
           ? record(envelope)
-          : record(envelope).pipe(Effect.andThen(onEnvelope(envelope)))
+          : record(envelope).pipe(Effect.andThen(options.onEnvelope(envelope)))
       Effect.runPromise(handle).then(
         () => socket.end(encodeResponse(acknowledgement(envelope.event.session_id))),
         () => socket.end(encodeResponse(rejection('failed to record hook event'))),
@@ -184,7 +209,7 @@ export const startHookIngress = (
       try: async () => {
         await prepareSocketPath(socketPath)
         const server = createServer((socket) =>
-          handleConnection(socket, registry.record, options.onEnvelope),
+          handleConnection(socket, registry.record, options),
         )
 
         await listen(server, socketPath)
@@ -256,6 +281,62 @@ export const sendHookEnvelope = (
     catch: (cause) =>
       new HookIngressError({
         message: `failed to send hook event to ${socketPath}`,
+        cause,
+      }),
+  })
+
+export const probeHookIngress = (
+  socketPath: string,
+  token: string,
+  timeoutMilliseconds = 1_000,
+): Effect.Effect<void, HookIngressError> =>
+  Effect.tryPromise({
+    try: () =>
+      new Promise<void>((resolve, reject) => {
+        const socket = createConnection({ path: socketPath })
+        let buffer = ''
+
+        socket.setEncoding('utf8')
+        socket.setTimeout(timeoutMilliseconds, () => {
+          socket.destroy()
+          reject(new Error('daemon probe timed out'))
+        })
+        socket.once('connect', () => {
+          socket.write(
+            `${encodeDaemonProbe({
+              type: 'probe',
+              version: HOOK_PROTOCOL_VERSION,
+              token,
+            })}\n`,
+          )
+        })
+        socket.on('data', (chunk: string) => {
+          buffer += chunk
+          const newline = buffer.indexOf('\n')
+          if (newline < 0) return
+
+          try {
+            const acknowledgement = parseDaemonProbeAcknowledgement(
+              buffer.slice(0, newline),
+            )
+            socket.destroy()
+            if (acknowledgement.token === token) resolve()
+            else reject(new Error('daemon identity did not match'))
+          } catch (cause) {
+            socket.destroy()
+            reject(cause)
+          }
+        })
+        socket.once('error', reject)
+        socket.once('end', () => {
+          if (buffer.indexOf('\n') < 0) {
+            reject(new Error('hook ingress closed without a response'))
+          }
+        })
+      }),
+    catch: (cause) =>
+      new HookIngressError({
+        message: `failed to verify daemon at ${socketPath}`,
         cause,
       }),
   })

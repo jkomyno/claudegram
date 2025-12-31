@@ -1,4 +1,3 @@
-import { createServer } from 'node:net'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -13,8 +12,11 @@ import {
   inspectDaemon,
   inspectService,
   installService,
+  makeSessionRegistry,
   runDoctor,
   runSetupWizard,
+  SessionRegistry,
+  startHookIngress,
   TelegramApi,
   uninstallService,
 } from '../../src'
@@ -47,22 +49,34 @@ describe('operations', () => {
     await import('node:fs/promises').then((fs) =>
       fs.mkdir(paths.stateDirectory, { recursive: true }),
     )
-    await writeFile(paths.pidPath, `${process.pid}\n`)
-    const server = createServer()
-    await new Promise<void>((resolve, reject) => {
-      server.once('error', reject)
-      server.listen(config.socketPath, resolve)
-    })
+    const identityToken = 'test-daemon-identity'
+    await writeFile(
+      paths.pidPath,
+      `${JSON.stringify({ pid: process.pid, token: identityToken })}\n`,
+    )
+    const registry = await Effect.runPromise(makeSessionRegistry)
+    const ingress = await Effect.runPromise(
+      startHookIngress(config.socketPath, { identityToken }).pipe(
+        Effect.provideService(SessionRegistry, registry),
+      ),
+    )
 
     try {
       expect(await Effect.runPromise(inspectDaemon(config))).toEqual({
         status: 'running',
         pid: process.pid,
       })
-    } finally {
-      await new Promise<void>((resolve, reject) => {
-        server.close((cause) => (cause === undefined ? resolve() : reject(cause)))
+
+      await writeFile(
+        paths.pidPath,
+        `${JSON.stringify({ pid: process.pid, token: 'wrong-token' })}\n`,
+      )
+      expect(await Effect.runPromise(inspectDaemon(config))).toEqual({
+        status: 'degraded',
+        pid: process.pid,
       })
+    } finally {
+      await Effect.runPromise(ingress.close)
     }
 
     expect(await Effect.runPromise(inspectDaemon(config))).toEqual({

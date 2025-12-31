@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,6 +13,7 @@ import {
   makeHookEnvelope,
   makeSessionRegistry,
   parseHookEvent,
+  probeHookIngress,
   sendHookEnvelope,
   SessionRegistry,
   startHookIngress,
@@ -74,6 +76,34 @@ describe('hook ingress contract', () => {
       })
     } finally {
       await Effect.runPromise(ingress.close)
+    }
+  })
+
+  it('bounds identity probes when another socket accepts without replying', async () => {
+    const temporaryDirectory = await mkdtemp(join(tmpdir(), 'claudegram-test-'))
+    temporaryDirectories.push(temporaryDirectory)
+    const socketPath = join(temporaryDirectory, 'held.sock')
+    const sockets = new Set<import('node:net').Socket>()
+    const server = createServer((socket) => {
+      sockets.add(socket)
+      socket.once('close', () => sockets.delete(socket))
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(socketPath, resolve)
+    })
+
+    try {
+      await expect(
+        Effect.runPromise(probeHookIngress(socketPath, 'token', 25)),
+      ).rejects.toThrow('failed to verify daemon')
+    } finally {
+      for (const socket of sockets) socket.destroy()
+      await new Promise<void>((resolve, reject) => {
+        server.close((cause) =>
+          cause === undefined ? resolve() : reject(cause),
+        )
+      })
     }
   })
 })

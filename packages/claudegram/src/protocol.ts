@@ -36,6 +36,23 @@ export const HookEnvelopeSchema = Schema.Struct({
 
 export type HookEnvelope = typeof HookEnvelopeSchema.Type
 
+export const DaemonProbeSchema = Schema.Struct({
+  type: Schema.Literal('probe'),
+  version: Schema.Literal(HOOK_PROTOCOL_VERSION),
+  token: Schema.NonEmptyString,
+})
+
+export type DaemonProbe = typeof DaemonProbeSchema.Type
+
+export const DaemonProbeAcknowledgementSchema = Schema.Struct({
+  type: Schema.Literal('probe-ack'),
+  version: Schema.Literal(HOOK_PROTOCOL_VERSION),
+  token: Schema.NonEmptyString,
+})
+
+export type DaemonProbeAcknowledgement =
+  typeof DaemonProbeAcknowledgementSchema.Type
+
 export const HookAcknowledgementSchema = Schema.Struct({
   type: Schema.Literal('ack'),
   version: Schema.Literal(HOOK_PROTOCOL_VERSION),
@@ -64,6 +81,10 @@ export type HookResponse = typeof HookResponseSchema.Type
 const HookEnvelopeJsonSchema = Schema.parseJson(HookEnvelopeSchema)
 const HookEventJsonSchema = Schema.parseJson(HookEventSchema)
 const HookResponseJsonSchema = Schema.parseJson(HookResponseSchema)
+const DaemonProbeJsonSchema = Schema.parseJson(DaemonProbeSchema)
+const DaemonProbeAcknowledgementJsonSchema = Schema.parseJson(
+  DaemonProbeAcknowledgementSchema,
+)
 
 export class HookProtocolError extends Data.TaggedError('HookProtocolError')<{
   readonly message: string
@@ -117,6 +138,30 @@ export const parseHookEnvelope = (line: string): HookEnvelope =>
 
 export const encodeHookEnvelope = (envelope: HookEnvelope): string =>
   encode(HookEnvelopeJsonSchema, envelope, 'failed to encode hook request')
+
+export const parseDaemonProbeOption = (line: string) =>
+  Schema.decodeUnknownOption(DaemonProbeJsonSchema)(line)
+
+export const encodeDaemonProbe = (probe: DaemonProbe): string =>
+  encode(DaemonProbeJsonSchema, probe, 'failed to encode daemon probe')
+
+export const parseDaemonProbeAcknowledgement = (
+  line: string,
+): DaemonProbeAcknowledgement =>
+  decode(
+    DaemonProbeAcknowledgementJsonSchema,
+    line,
+    'invalid daemon probe response',
+  )
+
+export const encodeDaemonProbeAcknowledgement = (
+  acknowledgement: DaemonProbeAcknowledgement,
+): string =>
+  encode(
+    DaemonProbeAcknowledgementJsonSchema,
+    acknowledgement,
+    'failed to encode daemon probe response',
+  )
 
 export const parseHookResponse = (line: string): HookResponse =>
   decode(HookResponseJsonSchema, line, 'invalid hook response')
