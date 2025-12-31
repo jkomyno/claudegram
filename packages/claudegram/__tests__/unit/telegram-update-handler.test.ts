@@ -59,6 +59,7 @@ describe('handleTelegramUpdate', () => {
     })
     const tmuxCalls: Array<Readonly<Record<string, unknown>>> = []
     const tmux = TmuxBridge.of({
+      hasPane: () => Effect.succeed(true),
       sendText: (target, text) =>
         Effect.sync(() => {
           tmuxCalls.push({ type: 'text', sessionId: target.id, text })

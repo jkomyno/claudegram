@@ -11,6 +11,7 @@ import {
   makeHookEnvelope,
   makeSessionRegistry,
   parseHookEvent,
+  restoreDaemonSnapshot,
   writeDaemonSnapshot,
 } from '../../src'
 
@@ -74,5 +75,41 @@ describe('daemon state', () => {
     )
     expect(error).toBeInstanceOf(DaemonStateError)
     expect(error.cause).toBeDefined()
+  })
+
+  it('restores only sessions whose tmux pane is still available', async () => {
+    const registry = await Effect.runPromise(makeSessionRegistry)
+    const makeSession = (id: string, tmuxPane: string) =>
+      registry.record(
+        makeHookEnvelope(
+          parseHookEvent({
+            session_id: id,
+            hook_event_name: 'SessionStart',
+          }),
+          { host: 'host-1', tmuxPane },
+          new Date('2026-08-13T12:00:00.000Z'),
+        ),
+      )
+    const available = await Effect.runPromise(makeSession('available', '%7'))
+    const stale = await Effect.runPromise(makeSession('stale', '%8'))
+    const snapshot = {
+      sessions: [available, stale],
+      topics: [available, stale].map((session, index) => ({
+        sessionId: session.id,
+        host: session.host,
+        threadId: 101 + index,
+        name: session.id,
+        createdAt: '2026-08-13T12:00:01.000Z',
+      })),
+    }
+
+    const restored = await Effect.runPromise(
+      restoreDaemonSnapshot(snapshot, {
+        hasPane: (session) => Effect.succeed(session.tmuxPane === '%7'),
+      }),
+    )
+
+    expect(restored.sessions.map((session) => session.id)).toEqual(['available'])
+    expect(restored.topics.map((topic) => topic.sessionId)).toEqual(['available'])
   })
 })

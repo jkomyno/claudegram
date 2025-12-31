@@ -8,7 +8,11 @@ import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 
 import { Config, type ClaudegramConfig } from './config'
-import { loadDaemonSnapshot, writeDaemonSnapshot } from './daemon-state'
+import {
+  type DaemonSnapshot,
+  loadDaemonSnapshot,
+  writeDaemonSnapshot,
+} from './daemon-state'
 import { startHookIngress } from './hook-ingress'
 import { isMissingFile } from './node-errors'
 import { makeNotifier, Notifier } from './notifier'
@@ -310,6 +314,22 @@ export const cleanupInactiveTopics = (
     ),
   )
 
+export const restoreDaemonSnapshot = (
+  snapshot: DaemonSnapshot,
+  tmux: Pick<TmuxBridge['Service'], 'hasPane'>,
+): Effect.Effect<DaemonSnapshot> =>
+  Effect.filter(snapshot.sessions, (session) => tmux.hasPane(session)).pipe(
+    Effect.map((sessions) => {
+      const sessionIds = new Set(sessions.map((session) => session.id))
+      return {
+        sessions,
+        topics: snapshot.topics.filter((topic) =>
+          sessionIds.has(topic.sessionId),
+        ),
+      }
+    }),
+  )
+
 export const runDaemon = (
   config: ClaudegramConfig,
 ): Effect.Effect<void, DaemonError, HttpClient.HttpClient> =>
@@ -345,20 +365,19 @@ export const runDaemon = (
           ),
       )
 
-      const snapshot = yield* loadDaemonSnapshot(paths.snapshotPath)
+      const tmux = makeTmuxBridge()
+      const snapshot = yield* loadDaemonSnapshot(paths.snapshotPath).pipe(
+        Effect.flatMap((loaded) => restoreDaemonSnapshot(loaded, tmux)),
+      )
       const api = yield* makeTelegramApi({ botToken: config.botToken })
       const registry = yield* makeSessionRegistryWithSessions(snapshot.sessions)
-      const sessionIds = new Set(snapshot.sessions.map((session) => session.id))
       const topics = yield* makeTopicManagerWithOptions({
-        initialTopics: snapshot.topics.filter((topic) =>
-          sessionIds.has(topic.sessionId),
-        ),
+        initialTopics: snapshot.topics,
       }).pipe(
         Effect.provideService(Config, config),
         Effect.provideService(TelegramApi, api),
         Effect.provideService(SessionRegistry, registry),
       )
-      const tmux = makeTmuxBridge()
       const muteRules = makeToolMuteRules()
       const notifier = yield* makeNotifier.pipe(
         Effect.provideService(Config, config),

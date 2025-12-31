@@ -8,6 +8,7 @@ import * as Layer from 'effect/Layer'
 import type { Session } from './session-registry'
 
 export interface TmuxBridgeService {
+  readonly hasPane: (session: Session) => Effect.Effect<boolean>
   readonly sendText: (
     session: Session,
     text: string,
@@ -83,6 +84,17 @@ export const makeTmuxBridge = (
     })
 
   return TmuxBridge.of({
+    hasPane: (session) =>
+      paneFor(session).pipe(
+        Effect.flatMap((pane) =>
+          run(
+            ['display-message', '-p', '-t', pane, '#{pane_id}'],
+            `failed to inspect tmux pane ${pane}`,
+          ),
+        ),
+        Effect.as(true),
+        Effect.catchAll(() => Effect.succeed(false)),
+      ),
     sendText: (session, text) =>
       Effect.gen(function* () {
         const pane = yield* paneFor(session)

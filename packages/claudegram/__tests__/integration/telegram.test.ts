@@ -503,6 +503,7 @@ describe('Telegram bridge', () => {
     const tmuxCalls: Array<{ readonly sessionId: string; readonly text: string }> =
       []
     const tmux = TmuxBridge.of({
+      hasPane: () => Effect.succeed(true),
       sendText: (session, text) =>
         Effect.sync(() => {
           tmuxCalls.push({ sessionId: session.id, text })
