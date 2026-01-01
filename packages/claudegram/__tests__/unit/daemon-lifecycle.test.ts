@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   type ClaudegramConfig,
+  type DaemonLaunchCommand,
   cleanupInactiveTopics,
   controlInstalledService,
   daemonPaths,
@@ -89,7 +90,7 @@ describe('daemon lifecycle', () => {
     const directory = await mkdtemp(join(tmpdir(), 'claudegram-lifecycle-'))
     temporaryDirectories.push(directory)
     const config = makeConfig(directory)
-    const launches: Array<Readonly<Record<string, unknown>>> = []
+    const launches: Array<DaemonLaunchCommand> = []
 
     const state = await Effect.runPromise(
       startDaemon(config, {
@@ -124,6 +125,95 @@ describe('daemon lifecycle', () => {
         }),
       ),
     ).rejects.toThrow('daemon did not become ready')
+  })
+
+  it('allows a live daemon identity to become ready before replacement', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'claudegram-lifecycle-'))
+    temporaryDirectories.push(directory)
+    const config = makeConfig(directory)
+    const paths = daemonPaths(config)
+    await mkdir(paths.stateDirectory, { recursive: true })
+    await writeFile(
+      paths.pidPath,
+      `${JSON.stringify({ pid: process.pid, token: 'starting-daemon' })}\n`,
+    )
+    let launches = 0
+
+    const state = await Effect.runPromise(
+      startDaemon(config, {
+        service: { homeDirectory: directory, platform: 'darwin' },
+        launchDaemon: async () => {
+          launches += 1
+        },
+        waitForState: async () => ({ status: 'running', pid: process.pid }),
+      }),
+    )
+
+    expect(state).toEqual({ status: 'running', pid: process.pid })
+    expect(launches).toBe(0)
+    expect(
+      JSON.parse(await readFile(paths.pidPath, 'utf8')),
+    ).toMatchObject({ token: 'starting-daemon' })
+  })
+
+  it('preserves a live daemon identity when start readiness expires', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'claudegram-lifecycle-'))
+    temporaryDirectories.push(directory)
+    const config = makeConfig(directory)
+    const paths = daemonPaths(config)
+    await mkdir(paths.stateDirectory, { recursive: true })
+    await writeFile(
+      paths.pidPath,
+      `${JSON.stringify({ pid: process.pid, token: 'starting-daemon' })}\n`,
+    )
+    let launches = 0
+
+    await expect(
+      Effect.runPromise(
+        startDaemon(config, {
+          service: { homeDirectory: directory, platform: 'darwin' },
+          launchDaemon: async () => {
+            launches += 1
+          },
+          waitForState: async () => ({ status: 'degraded', pid: process.pid }),
+        }),
+      ),
+    ).rejects.toThrow('identity was preserved')
+
+    expect(launches).toBe(0)
+    expect(JSON.parse(await readFile(paths.pidPath, 'utf8'))).toMatchObject({
+      token: 'starting-daemon',
+    })
+  })
+
+  it('preserves a live daemon identity when stop readiness expires', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'claudegram-lifecycle-'))
+    temporaryDirectories.push(directory)
+    const config = makeConfig(directory)
+    const paths = daemonPaths(config)
+    await mkdir(paths.stateDirectory, { recursive: true })
+    await writeFile(
+      paths.pidPath,
+      `${JSON.stringify({ pid: process.pid, token: 'starting-daemon' })}\n`,
+    )
+    const signals: Array<readonly [number, NodeJS.Signals]> = []
+
+    await expect(
+      Effect.runPromise(
+        stopDaemon(config, {
+          service: { homeDirectory: directory, platform: 'darwin' },
+          signalProcess: (pid, signal) => {
+            signals.push([pid, signal])
+          },
+          waitForState: async () => ({ status: 'degraded', pid: process.pid }),
+        }),
+      ),
+    ).rejects.toThrow('identity was preserved')
+
+    expect(signals).toEqual([])
+    expect(JSON.parse(await readFile(paths.pidPath, 'utf8'))).toMatchObject({
+      token: 'starting-daemon',
+    })
   })
 
   it('signals a verified daemon and removes only its matching identity', async () => {

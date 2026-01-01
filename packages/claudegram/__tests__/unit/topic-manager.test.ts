@@ -13,6 +13,7 @@ import {
   parseHookEvent,
   SessionRegistry,
   TelegramApi,
+  TelegramApiError,
 } from '../../src'
 
 const config: ClaudegramConfig = {
@@ -55,7 +56,12 @@ describe('TopicManager', () => {
       createForumTopic: () => Effect.die('not used'),
       deleteForumTopic: (_chatId, threadId) =>
         threadId === 101
-          ? Effect.fail({ _tag: 'TelegramApiError' as const, message: 'failed' })
+          ? Effect.fail(
+              new TelegramApiError({
+                method: 'deleteForumTopic',
+                message: 'failed',
+              }),
+            )
           : Effect.sync(() => {
               deletedThreadIds.push(threadId)
             }),

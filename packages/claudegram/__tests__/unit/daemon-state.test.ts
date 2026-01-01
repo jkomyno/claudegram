@@ -77,7 +77,7 @@ describe('daemon state', () => {
     expect(error.cause).toBeDefined()
   })
 
-  it('restores only sessions whose tmux pane is still available', async () => {
+  it('retains completed pane checks when another restored pane hangs', async () => {
     const registry = await Effect.runPromise(makeSessionRegistry)
     const makeSession = (id: string, tmuxPane: string) =>
       registry.record(
@@ -92,9 +92,10 @@ describe('daemon state', () => {
       )
     const available = await Effect.runPromise(makeSession('available', '%7'))
     const stale = await Effect.runPromise(makeSession('stale', '%8'))
+    const hung = await Effect.runPromise(makeSession('hung', '%9'))
     const snapshot = {
-      sessions: [available, stale],
-      topics: [available, stale].map((session, index) => ({
+      sessions: [available, stale, hung],
+      topics: [available, stale, hung].map((session, index) => ({
         sessionId: session.id,
         host: session.host,
         threadId: 101 + index,
@@ -104,9 +105,16 @@ describe('daemon state', () => {
     }
 
     const restored = await Effect.runPromise(
-      restoreDaemonSnapshot(snapshot, {
-        hasPane: (session) => Effect.succeed(session.tmuxPane === '%7'),
-      }),
+      restoreDaemonSnapshot(
+        snapshot,
+        {
+          hasPane: (session) =>
+            session.tmuxPane === '%9'
+              ? Effect.never
+              : Effect.succeed(session.tmuxPane === '%7'),
+        },
+        { timeout: '10 millis' },
+      ),
     )
 
     expect(restored.sessions.map((session) => session.id)).toEqual(['available'])

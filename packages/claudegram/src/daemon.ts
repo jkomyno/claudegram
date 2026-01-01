@@ -1,13 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { mkdir, open, readFile, unlink, writeFile } from 'node:fs/promises'
+import { link, mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { dirname, extname, join } from 'node:path'
 
 import type * as HttpClient from '@effect/platform/HttpClient'
 import * as Data from 'effect/Data'
+import type * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import * as Option from 'effect/Option'
+import * as Ref from 'effect/Ref'
 import * as Schema from 'effect/Schema'
 
 import { Config, type ClaudegramConfig } from './config'
@@ -30,11 +32,16 @@ import {
   controlInstalledService,
   type ServiceInstallOptions,
 } from './service-install'
-import { makeTmuxBridge, TmuxBridge } from './tmux-bridge'
+import {
+  makeTmuxBridge,
+  TmuxBridge,
+  type TmuxBridgeService,
+} from './tmux-bridge'
 import { makeToolMuteRules, ToolMuteRules } from './tool-mute-rules'
 import {
   makeTopicManagerWithOptions,
   TopicManager,
+  type TopicManagerService,
 } from './topic-manager'
 import { socketIsAlive } from './unix-socket'
 
@@ -184,7 +191,7 @@ export const inspectDaemon = (
 const waitForState = async (
   config: ClaudegramConfig,
   expected: 'running' | 'stopped',
-  timeoutMilliseconds = 5000,
+  timeoutMilliseconds = 10_000,
 ): Promise<DaemonState> => {
   const deadline = Date.now() + timeoutMilliseconds
   let last = await Effect.runPromise(inspectDaemon(config))
@@ -245,6 +252,72 @@ const removeIdentityIfMatches = async (
   })
 }
 
+const isExistingFile = (cause: unknown): boolean =>
+  typeof cause === 'object' &&
+  cause !== null &&
+  'code' in cause &&
+  cause.code === 'EEXIST'
+
+const acquireDaemonIdentity = async (
+  pidPath: string,
+  identity: DaemonIdentity & { readonly token: string },
+): Promise<void> => {
+  const encoded = Schema.encodeSync(DaemonIdentityJsonSchema)(identity)
+  const recoveryPath = `${pidPath}.recovery`
+  const temporaryPath = `${pidPath}.${identity.token}.tmp`
+  await writeFile(temporaryPath, `${encoded}\n`, { flag: 'wx', mode: 0o600 })
+  try {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try {
+        await link(temporaryPath, pidPath)
+        return
+      } catch (cause) {
+        if (!isExistingFile(cause)) throw cause
+
+        const existing = await readDaemonIdentity(pidPath)
+        if (existing !== undefined && pidIsAlive(existing.pid)) {
+          throw new DaemonError({
+            message: `daemon ${existing.pid} is already starting or running`,
+          })
+        }
+
+        try {
+          await link(temporaryPath, recoveryPath)
+        } catch (recoveryCause) {
+          if (!isExistingFile(recoveryCause)) throw recoveryCause
+          const recoveryOwner = await readDaemonIdentity(recoveryPath)
+          if (recoveryOwner !== undefined && !pidIsAlive(recoveryOwner.pid)) {
+            await removeIdentityIfMatches(recoveryPath, recoveryOwner)
+          }
+          await new Promise((resolve) => setTimeout(resolve, 25))
+          continue
+        }
+
+        try {
+          const current = await readDaemonIdentity(pidPath)
+          if (current !== undefined && pidIsAlive(current.pid)) {
+            throw new DaemonError({
+              message: `daemon ${current.pid} is already starting or running`,
+            })
+          }
+          await rename(temporaryPath, pidPath)
+          return
+        } finally {
+          await removeIdentityIfMatches(recoveryPath, identity)
+        }
+      }
+    }
+
+    throw new DaemonError({
+      message: `failed to acquire daemon pid file ${pidPath}`,
+    })
+  } finally {
+    await unlink(temporaryPath).catch((cause) => {
+      if (!isMissingFile(cause)) throw cause
+    })
+  }
+}
+
 export const startDaemon = (
   config: ClaudegramConfig,
   options: DaemonControlOptions = {},
@@ -265,6 +338,16 @@ export const startDaemon = (
 
       const paths = daemonPaths(config)
       const wait = options.waitForState ?? waitForState
+      if (
+        current.status === 'degraded' &&
+        inspected.identity?.token !== undefined
+      ) {
+        const recovered = await wait(config, 'running')
+        if (recovered.status === 'running') return recovered
+        throw new DaemonError({
+          message: `daemon ${current.pid} is still starting or unavailable; its identity was preserved`,
+        })
+      }
       const managed = await Effect.runPromise(
         controlInstalledService('start', options.service),
       )
@@ -319,14 +402,27 @@ export const stopDaemon = (
         const state = await wait(config, 'stopped')
         if (state.status !== 'stopped') {
           throw new DaemonError({
-            message: 'managed daemon did not stop within 5 seconds',
+            message: 'managed daemon did not stop within 10 seconds',
           })
         }
         await removeIdentityIfMatches(paths.pidPath, identity)
         return state
       }
 
-      const current = inspected.state
+      let current = inspected.state
+      if (
+        current.status === 'degraded' &&
+        identity?.token !== undefined
+      ) {
+        const recovered = await wait(config, 'running')
+        if (recovered.status !== 'running') {
+          throw new DaemonError({
+            message: `daemon ${current.pid} is still starting or unavailable; its identity was preserved`,
+          })
+        }
+        current = recovered
+      }
+
       if (current.status === 'stopped' || current.status === 'degraded') {
         await removeIdentityIfMatches(paths.pidPath, identity)
         return {
@@ -340,7 +436,7 @@ export const stopDaemon = (
       const state = await wait(config, 'stopped')
       if (state.status !== 'stopped') {
         throw new DaemonError({
-          message: `daemon ${current.pid} did not stop within 5 seconds`,
+          message: `daemon ${current.pid} did not stop within 10 seconds`,
         })
       }
       await removeIdentityIfMatches(paths.pidPath, identity)
@@ -370,7 +466,7 @@ export const restartDaemon = (
               )
               if (state.status !== 'running') {
                 throw new DaemonError({
-                  message: 'managed daemon did not restart within 5 seconds',
+                  message: 'managed daemon did not restart within 10 seconds',
                 })
               }
               return state
@@ -405,7 +501,7 @@ const waitForSignal = (): Effect.Effect<NodeJS.Signals> =>
   })
 
 export const cleanupInactiveTopics = (
-  topics: Pick<TopicManager['Service'], 'cleanupInactiveBefore'>,
+  topics: Pick<TopicManagerService, 'cleanupInactiveBefore'>,
   topicTtlHours: number,
   now: () => number = Date.now,
 ) =>
@@ -417,19 +513,45 @@ export const cleanupInactiveTopics = (
 
 export const restoreDaemonSnapshot = (
   snapshot: DaemonSnapshot,
-  tmux: Pick<TmuxBridge['Service'], 'hasPane'>,
+  tmux: Pick<TmuxBridgeService, 'hasPane'>,
+  options: {
+    readonly concurrency?: number
+    readonly timeout?: Duration.DurationInput
+  } = {},
 ): Effect.Effect<DaemonSnapshot> =>
-  Effect.filter(snapshot.sessions, (session) => tmux.hasPane(session)).pipe(
-    Effect.map((sessions) => {
-      const sessionIds = new Set(sessions.map((session) => session.id))
-      return {
-        sessions,
-        topics: snapshot.topics.filter((topic) =>
-          sessionIds.has(topic.sessionId),
+  Effect.gen(function* () {
+    const availableIds = yield* Ref.make<ReadonlySet<string>>(new Set())
+    yield* Effect.forEach(
+      snapshot.sessions,
+      (session) =>
+        tmux.hasPane(session).pipe(
+          Effect.flatMap((available) =>
+            available
+              ? Ref.update(availableIds, (ids) =>
+                  new Set(ids).add(session.id),
+                )
+              : Effect.void,
+          ),
         ),
-      }
-    }),
-  )
+      { concurrency: options.concurrency ?? 8 },
+    ).pipe(
+      Effect.timeoutTo({
+        duration: options.timeout ?? '5 seconds',
+        onSuccess: () => undefined,
+        onTimeout: () => undefined,
+      }),
+    )
+
+    const retainedIds = yield* Ref.get(availableIds)
+    return {
+      sessions: snapshot.sessions.filter((session) =>
+        retainedIds.has(session.id),
+      ),
+      topics: snapshot.topics.filter((topic) =>
+        retainedIds.has(topic.sessionId),
+      ),
+    }
+  })
 
 export const runDaemon = (
   config: ClaudegramConfig,
@@ -448,28 +570,10 @@ export const runDaemon = (
         Effect.tryPromise({
           try: async () => {
             await mkdir(paths.stateDirectory, { recursive: true, mode: 0o700 })
-            const existing = await readDaemonIdentity(paths.pidPath)
-            if (
-              existing !== undefined &&
-              existing.pid !== process.pid &&
-              pidIsAlive(existing.pid) &&
-              existing.token !== undefined &&
-              (await Effect.runPromise(
-                probeHookIngress(config.socketPath, existing.token).pipe(
-                  Effect.as(true),
-                  Effect.catchAll(() => Effect.succeed(false)),
-                ),
-              ))
-            ) {
-              throw new DaemonError({
-                message: `daemon ${existing.pid} is already running`,
-              })
-            }
-            const encoded = Schema.encodeSync(DaemonIdentityJsonSchema)({
+            await acquireDaemonIdentity(paths.pidPath, {
               pid: process.pid,
               token: identityToken,
             })
-            await writeFile(paths.pidPath, `${encoded}\n`, { mode: 0o600 })
           },
           catch: (cause) =>
             cause instanceof DaemonError
