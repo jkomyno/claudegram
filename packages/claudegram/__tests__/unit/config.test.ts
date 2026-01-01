@@ -43,12 +43,14 @@ describe('loadConfig', () => {
         homeDirectory: '/tmp/claudegram-home',
         env: {
           CLAUDEGRAM_BOT_TOKEN: 'env-token',
+          CLAUDEGRAM_OWNER_USER_ID: '789',
           CLAUDEGRAM_SOCKET_PATH: '/tmp/from-env.sock',
           CLAUDEGRAM_VERBOSE: 'true',
         },
         file: {
           botToken: 'file-token',
           chatId: -100123,
+          ownerUserId: 456,
           socketPath: '/tmp/from-file.sock',
           topicTtlHours: 24,
           verbose: false,
@@ -59,6 +61,7 @@ describe('loadConfig', () => {
     expect(config).toEqual({
       botToken: 'env-token',
       chatId: -100123,
+      ownerUserId: 789,
       configPath: '/tmp/claudegram-home/.config/claudegram/config.json',
       socketPath: '/tmp/from-env.sock',
       topicTtlHours: 24,
@@ -88,6 +91,7 @@ describe('loadConfig', () => {
   it.each([
     ['botToken', 123],
     ['chatId', '-100123'],
+    ['ownerUserId', '123'],
     ['socketPath', false],
     ['topicTtlHours', '24'],
     ['verbose', 'false'],
@@ -96,6 +100,15 @@ describe('loadConfig', () => {
       ConfigError,
     )
   })
+
+  it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects an invalid Telegram owner user id (%s)',
+    async (ownerUserId) => {
+      expect(
+        await loadConfigError(JSON.stringify({ ownerUserId })),
+      ).toBeInstanceOf(ConfigError)
+    },
+  )
 
   it.each([0, -1])(
     'rejects a non-positive topic TTL from the config file (%s)',

@@ -171,7 +171,30 @@ describe('operations', () => {
             update_id: 1,
             message: {
               message_id: 1,
-              text: 'hello',
+              text: 'unrelated old message',
+              from: {
+                id: 999,
+                is_bot: false,
+                first_name: 'Someone',
+              },
+              chat: {
+                id: -100999,
+                title: 'Wrong group',
+                type: 'supergroup',
+                is_forum: true,
+              },
+            },
+          },
+          {
+            update_id: 2,
+            message: {
+              message_id: 2,
+              text: '/claudegram_setup@claudegram_test_bot setup-code',
+              from: {
+                id: 424242,
+                is_bot: false,
+                first_name: 'Alberto',
+              },
               chat: {
                 id: -100123,
                 title: 'Test group',
@@ -199,6 +222,7 @@ describe('operations', () => {
           },
         },
         makeApi: () => Effect.succeed(api),
+        setupCode: () => 'setup-code',
         installManagedHooks: () =>
           Effect.succeed({
             settingsPath: join(directory, '.claude', 'settings.json'),
@@ -213,13 +237,24 @@ describe('operations', () => {
     expect(result).toMatchObject({
       botUsername: 'claudegram_test_bot',
       chatId: -100123,
+      ownerUserId: 424242,
       daemon: { status: 'running', pid: 12345 },
     })
-    expect(notes.at(-1)).toBe('Using Test group (-100123).')
+    expect(notes[0]).toContain(
+      '/claudegram_setup@claudegram_test_bot setup-code',
+    )
+    expect(notes.at(-1)).toBe(
+      'Using Test group (-100123). Authorized Telegram user: 424242.',
+    )
     const saved = JSON.parse(await readFile(result.configPath, 'utf8')) as {
       readonly botToken: string
       readonly chatId: number
+      readonly ownerUserId: number
     }
-    expect(saved).toMatchObject({ botToken: 'fake-token', chatId: -100123 })
+    expect(saved).toMatchObject({
+      botToken: 'fake-token',
+      chatId: -100123,
+      ownerUserId: 424242,
+    })
   })
 })

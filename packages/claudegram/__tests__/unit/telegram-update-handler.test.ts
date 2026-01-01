@@ -151,6 +151,7 @@ describe('handleTelegramUpdate', () => {
       update_id: 3,
       callback_query: {
         id: 'callback-allow',
+        from: { id: 424242, is_bot: false, first_name: 'Alberto' },
         data: 'cgm:p:allow',
         message: {
           message_id: 3,
@@ -163,6 +164,7 @@ describe('handleTelegramUpdate', () => {
       update_id: 4,
       callback_query: {
         id: 'callback-reply',
+        from: { id: 424242, is_bot: false, first_name: 'Alberto' },
         data: 'cgm:r:reply',
         message: {
           message_id: 4,
@@ -175,6 +177,7 @@ describe('handleTelegramUpdate', () => {
       update_id: 5,
       callback_query: {
         id: 'callback-wrong-session',
+        from: { id: 424242, is_bot: false, first_name: 'Alberto' },
         data: 'cgm:p:wrong-session',
         message: {
           message_id: 5,

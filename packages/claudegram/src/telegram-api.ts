@@ -15,6 +15,21 @@ const TelegramChatSchema = Schema.Struct({
   is_forum: Schema.optional(Schema.Boolean),
 })
 
+export const TelegramUserSchema = Schema.Struct({
+  id: Schema.Number.pipe(
+    Schema.int(),
+    Schema.positive(),
+    Schema.filter(Number.isSafeInteger, {
+      description: 'a safe positive integer Telegram user id',
+    }),
+  ),
+  is_bot: Schema.optional(Schema.Boolean),
+  first_name: Schema.optional(Schema.String),
+  username: Schema.optional(Schema.String),
+})
+
+export type TelegramUser = typeof TelegramUserSchema.Type
+
 export const InlineKeyboardButtonSchema = Schema.Struct({
   text: Schema.String,
   callback_data: Schema.String,
@@ -32,6 +47,7 @@ export const TelegramMessageSchema = Schema.Struct({
   message_id: Schema.Number,
   message_thread_id: Schema.optional(Schema.Number),
   text: Schema.optional(Schema.String),
+  from: Schema.optional(TelegramUserSchema),
   chat: TelegramChatSchema,
   reply_markup: Schema.optional(InlineKeyboardMarkupSchema),
 })
@@ -40,6 +56,7 @@ export type TelegramMessage = typeof TelegramMessageSchema.Type
 
 export const TelegramCallbackQuerySchema = Schema.Struct({
   id: Schema.String,
+  from: TelegramUserSchema,
   data: Schema.optional(Schema.String),
   message: Schema.optional(TelegramMessageSchema),
 })

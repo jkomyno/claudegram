@@ -560,6 +560,7 @@ describe('Telegram bridge', () => {
           update_id: updateId,
           callback_query: {
             id: callbackId,
+            from: { id: 424242, is_bot: false, first_name: 'Alberto' },
             data: callbackData,
             message: {
               message_id: updateId,

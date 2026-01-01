@@ -16,14 +16,24 @@ const TopicTtlHoursSchema = Schema.Number.pipe(
 )
 
 const TelegramChatIdSchema = Schema.Number.pipe(
+  Schema.int(),
   Schema.filter(Number.isSafeInteger, {
     description: 'a safe integer Telegram chat id',
+  }),
+)
+
+const TelegramUserIdSchema = Schema.Number.pipe(
+  Schema.int(),
+  Schema.positive(),
+  Schema.filter(Number.isSafeInteger, {
+    description: 'a safe positive integer Telegram user id',
   }),
 )
 
 export const PersistedConfigSchema = Schema.Struct({
   botToken: Schema.optional(Schema.String),
   chatId: Schema.optional(TelegramChatIdSchema),
+  ownerUserId: Schema.optional(TelegramUserIdSchema),
   socketPath: Schema.optional(Schema.String),
   topicTtlHours: Schema.optional(TopicTtlHoursSchema),
   verbose: Schema.optional(Schema.Boolean),
@@ -38,6 +48,7 @@ const PersistedConfigJsonSchema = Schema.parseJson(PersistedConfigSchema, {
 export interface ClaudegramConfig {
   readonly botToken?: string
   readonly chatId?: number
+  readonly ownerUserId?: number
   readonly socketPath: string
   readonly topicTtlHours: number
   readonly verbose: boolean
@@ -107,6 +118,21 @@ const parseChatId = (
   return parsed
 }
 
+const parseOwnerUserId = (
+  value: string | number | undefined,
+): number | undefined => {
+  if (value === undefined) return undefined
+
+  try {
+    return Schema.decodeUnknownSync(TelegramUserIdSchema)(Number(value))
+  } catch (cause) {
+    throw new ConfigError({
+      message: 'Telegram owner user id must be a positive integer',
+      cause,
+    })
+  }
+}
+
 const readConfigFile = async (
   configPath: string,
 ): Promise<PersistedConfig> => {
@@ -158,6 +184,9 @@ export const loadConfig = (
         'CLAUDEGRAM_TOPIC_TTL_HOURS',
       )
       const chatId = parseChatId(env.CLAUDEGRAM_CHAT_ID ?? file.chatId)
+      const ownerUserId = parseOwnerUserId(
+        env.CLAUDEGRAM_OWNER_USER_ID ?? file.ownerUserId,
+      )
       const botToken = env.CLAUDEGRAM_BOT_TOKEN ?? file.botToken
 
       return {
@@ -173,6 +202,7 @@ export const loadConfig = (
         ),
         ...(botToken === undefined ? {} : { botToken }),
         ...(chatId === undefined ? {} : { chatId }),
+        ...(ownerUserId === undefined ? {} : { ownerUserId }),
       }
     },
     catch: (cause) =>
