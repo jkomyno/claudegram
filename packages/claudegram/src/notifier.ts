@@ -5,8 +5,8 @@ import * as Data from 'effect/Data'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
-import * as Ref from 'effect/Ref'
 import * as Schema from 'effect/Schema'
+import * as SynchronizedRef from 'effect/SynchronizedRef'
 
 import { Config } from './config'
 import type { HookEnvelope, HookEvent } from './protocol'
@@ -124,9 +124,6 @@ interface PendingCallback {
 
 interface CallbackResolution {
   readonly action: PendingTelegramAction
-  readonly nextNotification?: OutboundNotification & {
-    readonly threadId: number
-  }
 }
 
 export interface NotifierOptions {
@@ -220,9 +217,8 @@ export const makeNotifierWithOptions = (
   const registry = yield* SessionRegistry
   const topics = yield* TopicManager
   const muteRules = yield* ToolMuteRules
-  const pendingActions = yield* Ref.make<ReadonlyMap<string, PendingCallback>>(
-    new Map(),
-  )
+  const pendingActions =
+    yield* SynchronizedRef.make<ReadonlyMap<string, PendingCallback>>(new Map())
   const now = options.now ?? (() => new Date())
 
   if (config.chatId === undefined) {
@@ -259,7 +255,7 @@ export const makeNotifierWithOptions = (
   ): Effect.Effect<ReadonlyArray<string>> => {
     const issuedAt = now()
     const { entries, tokens } = issueActions(actions, issuedAt)
-    return Ref.update(pendingActions, (current) => {
+    return SynchronizedRef.update(pendingActions, (current) => {
       const next = new Map<string, PendingCallback>()
       const sessionId = actions[0]?.sessionId
       for (const [token, pending] of current) {
@@ -476,14 +472,16 @@ export const makeNotifierWithOptions = (
       Effect.gen(function* () {
         const resolvedAt = now()
         const nextInteractionId = randomUUID()
-        const resolution = yield* Ref.modify(pendingActions, (current) => {
+        const resolution = yield* SynchronizedRef.modifyEffect(
+          pendingActions,
+          (current) => {
           const pending = current.get(callbackData)
           if (pending === undefined) {
-            return [Option.none(), current] as const
+              return Effect.succeed([Option.none(), current] as const)
           }
 
           if (pending.action.sessionId !== sessionId) {
-            return [Option.none(), current] as const
+              return Effect.succeed([Option.none(), current] as const)
           }
 
           const next = new Map<string, PendingCallback>()
@@ -497,29 +495,29 @@ export const makeNotifierWithOptions = (
           }
 
           if (pending.expiresAt <= resolvedAt.getTime()) {
-            return [Option.none(), next] as const
+              return Effect.succeed([Option.none(), next] as const)
           }
 
           if (pending.action.type === 'permission') {
-            return [
-              Option.some<CallbackResolution>({ action: pending.action }),
-              next,
-            ] as const
+              return Effect.succeed([
+                Option.some<CallbackResolution>({ action: pending.action }),
+                next,
+              ] as const)
           }
 
           const answers = [...pending.action.answers, pending.action.answer]
           const nextQuestionIndex = pending.action.questionIndex + 1
           if (nextQuestionIndex >= pending.action.questions.length) {
-            return [
-              Option.some<CallbackResolution>({
-                action: {
-                  type: 'reply',
-                  sessionId,
-                  text: questionReply(pending.action.questions, answers),
-                },
-              }),
-              next,
-            ] as const
+              return Effect.succeed([
+                Option.some<CallbackResolution>({
+                  action: {
+                    type: 'reply',
+                    sessionId,
+                    text: questionReply(pending.action.questions, answers),
+                  },
+                }),
+                next,
+              ] as const)
           }
 
           const actions = questionActions(
@@ -538,36 +536,33 @@ export const makeNotifierWithOptions = (
             next.set(token, candidate)
           }
 
-          return [
-            Option.some<CallbackResolution>({
-              action: { type: 'next-question', sessionId },
-              nextNotification: {
-                ...questionNotification(
-                  pending.action.questions,
-                  nextQuestionIndex,
-                  issued.tokens,
-                ),
-                threadId: pending.action.threadId,
-              },
-            }),
-            next,
-          ] as const
-        })
+            const notification = questionNotification(
+              pending.action.questions,
+              nextQuestionIndex,
+              issued.tokens,
+            )
+            return api
+              .sendMessage({
+                chatId,
+                messageThreadId: pending.action.threadId,
+                text: notification.text,
+                ...(notification.replyMarkup === undefined
+                  ? {}
+                  : { replyMarkup: notification.replyMarkup }),
+              })
+              .pipe(
+                Effect.as([
+                  Option.some<CallbackResolution>({
+                    action: { type: 'next-question', sessionId },
+                  }),
+                  next,
+                ] as const),
+              )
+          },
+        )
 
         if (Option.isNone(resolution)) {
           return Option.none()
-        }
-
-        if (resolution.value.nextNotification !== undefined) {
-          const notification = resolution.value.nextNotification
-          yield* api.sendMessage({
-            chatId,
-            messageThreadId: notification.threadId,
-            text: notification.text,
-            ...(notification.replyMarkup === undefined
-              ? {}
-              : { replyMarkup: notification.replyMarkup }),
-          })
         }
 
         return Option.some(resolution.value.action)

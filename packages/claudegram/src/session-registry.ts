@@ -28,6 +28,11 @@ export interface SessionRegistryService {
   readonly get: (sessionId: string) => Effect.Effect<Option.Option<Session>>
   readonly list: Effect.Effect<ReadonlyArray<Session>>
   readonly remove: (sessionId: string) => Effect.Effect<boolean>
+  readonly claimInactive: (
+    sessionId: string,
+    cutoff: Date,
+  ) => Effect.Effect<Option.Option<Session>>
+  readonly restoreIfAbsent: (session: Session) => Effect.Effect<boolean>
   readonly removeInactiveBefore: (cutoff: Date) => Effect.Effect<ReadonlyArray<Session>>
 }
 
@@ -101,6 +106,28 @@ export const makeSessionRegistryWithSessions = (
 
           const next = new Map(sessions)
           next.delete(sessionId)
+          return [true, next] as const
+        }),
+      claimInactive: (sessionId, cutoff) =>
+        Ref.modify(state, (sessions) => {
+          const session = sessions.get(sessionId)
+          if (
+            session === undefined ||
+            new Date(session.lastActivityAt) >= cutoff
+          ) {
+            return [Option.none(), sessions] as const
+          }
+
+          const next = new Map(sessions)
+          next.delete(sessionId)
+          return [Option.some(session), next] as const
+        }),
+      restoreIfAbsent: (session) =>
+        Ref.modify(state, (sessions) => {
+          if (sessions.has(session.id)) return [false, sessions] as const
+
+          const next = new Map(sessions)
+          next.set(session.id, session)
           return [true, next] as const
         }),
       removeInactiveBefore: (cutoff) =>

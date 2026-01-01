@@ -25,6 +25,9 @@ export interface TelegramPollingOptions {
 const DEFAULT_INITIAL_RETRY_DELAY = Duration.seconds(1)
 const DEFAULT_MAXIMUM_RETRY_DELAY = Duration.seconds(30)
 
+const failureMessage = (cause: unknown): string =>
+  cause instanceof Error ? cause.message : String(cause)
+
 export const pollTelegramOnce = (
   offset: number | undefined,
   handler: TelegramUpdateHandler,
@@ -37,8 +40,11 @@ export const pollTelegramOnce = (
     for (const update of updates) {
       yield* handler(update).pipe(
         Effect.catchAll((cause) =>
-          Effect.logWarning('Skipping failed Telegram update', cause).pipe(
-            Effect.annotateLogs('telegramUpdateId', update.update_id),
+          Effect.logWarning('Skipping failed Telegram update').pipe(
+            Effect.annotateLogs({
+              telegramUpdateId: update.update_id,
+              failure: failureMessage(cause),
+            }),
           ),
         ),
       )

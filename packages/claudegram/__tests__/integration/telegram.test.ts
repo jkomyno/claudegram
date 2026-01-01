@@ -38,6 +38,7 @@ interface FakeTelegram {
   readonly baseUrl: string
   readonly calls: Array<RecordedCall>
   failedGetUpdates: number
+  failedSendMessages: number
   readonly heldMethods: Set<string>
   updates: ReadonlyArray<unknown>
   readonly close: () => Promise<void>
@@ -67,6 +68,7 @@ const startFakeTelegram = async (): Promise<FakeTelegram> => {
   let topicId = 100
   let messageId = 1000
   let failedGetUpdates = 0
+  let failedSendMessages = 0
   const heldMethods = new Set<string>()
   let updates: ReadonlyArray<unknown> = []
 
@@ -83,6 +85,15 @@ const startFakeTelegram = async (): Promise<FakeTelegram> => {
 
     if (method === 'getUpdates' && failedGetUpdates > 0) {
       failedGetUpdates -= 1
+      response.statusCode = 503
+      response.end(
+        JSON.stringify({ ok: false, description: 'temporarily unavailable' }),
+      )
+      return
+    }
+
+    if (method === 'sendMessage' && failedSendMessages > 0) {
+      failedSendMessages -= 1
       response.statusCode = 503
       response.end(
         JSON.stringify({ ok: false, description: 'temporarily unavailable' }),
@@ -134,6 +145,12 @@ const startFakeTelegram = async (): Promise<FakeTelegram> => {
     },
     set failedGetUpdates(value: number) {
       failedGetUpdates = value
+    },
+    get failedSendMessages() {
+      return failedSendMessages
+    },
+    set failedSendMessages(value: number) {
+      failedSendMessages = value
     },
     heldMethods,
     get updates() {
@@ -570,11 +587,15 @@ describe('Telegram bridge', () => {
     const stableCallback =
       firstMarkup.inline_keyboard[0]?.[0]?.callback_data ?? ''
 
-    await runCallback(1, 'callback-stable', stableCallback, threadId)
+    fake.failedSendMessages = 1
+    await expect(
+      runCallback(1, 'callback-stable-failed', stableCallback, threadId),
+    ).rejects.toThrow('failed to handle Telegram update 1')
+    await runCallback(2, 'callback-stable-retried', stableCallback, threadId)
     expect(tmuxCalls).toEqual([])
 
     const sendCalls = fake.calls.filter((call) => call.method === 'sendMessage')
-    const secondSend = sendCalls[1]
+    const secondSend = sendCalls.at(-1)
     const secondMarkup = secondSend?.body.reply_markup as {
       readonly inline_keyboard: ReadonlyArray<
         ReadonlyArray<{ readonly callback_data: string }>
@@ -583,10 +604,11 @@ describe('Telegram bridge', () => {
     const europeCallback =
       secondMarkup.inline_keyboard[0]?.[0]?.callback_data ?? ''
 
-    await runCallback(2, 'callback-europe', europeCallback, threadId)
+    await runCallback(3, 'callback-europe', europeCallback, threadId)
 
     expect(sendCalls.map((call) => call.body.text)).toEqual([
       '❓ 1/2 Which release channel?',
+      '❓ 2/2 Which region?',
       '❓ 2/2 Which region?',
     ])
     expect(tmuxCalls).toEqual([

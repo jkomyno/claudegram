@@ -3,6 +3,7 @@ import { basename } from 'node:path'
 import * as Context from 'effect/Context'
 import * as Data from 'effect/Data'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
@@ -80,6 +81,15 @@ export const makeTopicManagerWithOptions = (
   }
 
   const chatId = config.chatId
+  const sessionAccess = new Map<string, Effect.Semaphore>()
+  const accessFor = (sessionId: string): Effect.Semaphore => {
+    const existing = sessionAccess.get(sessionId)
+    if (existing !== undefined) return existing
+
+    const created = Effect.unsafeMakeSemaphore(1)
+    sessionAccess.set(sessionId, created)
+    return created
+  }
   const topics = yield* SynchronizedRef.make<ReadonlyMap<string, SessionTopic>>(
     new Map(
       (options.initialTopics ?? []).map((topic) => [topic.sessionId, topic]),
@@ -88,29 +98,31 @@ export const makeTopicManagerWithOptions = (
 
   return TopicManager.of({
     ensure: (session) =>
-      SynchronizedRef.modifyEffect(topics, (current) => {
-        const existing = current.get(session.id)
-        if (existing !== undefined) {
-          return Effect.succeed([existing, current] as const)
-        }
+      accessFor(session.id).withPermits(1)(
+        SynchronizedRef.modifyEffect(topics, (current) => {
+          const existing = current.get(session.id)
+          if (existing !== undefined) {
+            return Effect.succeed([existing, current] as const)
+          }
 
-        const name = topicNameFor(session)
-        return api.createForumTopic(chatId, name).pipe(
-          Effect.map((created) => {
-            const topic: SessionTopic = {
-              sessionId: session.id,
-              host: session.host,
-              threadId: created.message_thread_id,
-              name: created.name,
-              createdAt: new Date().toISOString(),
-            }
-            const next = new Map(current)
-            next.set(session.id, topic)
-            return [topic, next] as const
-          }),
-          Effect.mapError(mapError(`failed to create topic for ${session.id}`)),
-        )
-      }),
+          const name = topicNameFor(session)
+          return api.createForumTopic(chatId, name).pipe(
+            Effect.map((created) => {
+              const topic: SessionTopic = {
+                sessionId: session.id,
+                host: session.host,
+                threadId: created.message_thread_id,
+                name: created.name,
+                createdAt: new Date().toISOString(),
+              }
+              const next = new Map(current)
+              next.set(session.id, topic)
+              return [topic, next] as const
+            }),
+            Effect.mapError(mapError(`failed to create topic for ${session.id}`)),
+          )
+        }),
+      ),
     getBySessionId: (sessionId) =>
       SynchronizedRef.get(topics).pipe(
         Effect.map((current) => Option.fromNullable(current.get(sessionId))),
@@ -130,47 +142,64 @@ export const makeTopicManagerWithOptions = (
     ),
     cleanupInactiveBefore: (cutoff) =>
       Effect.gen(function* () {
-        const sessions = yield* registry.list
-        const staleSessionIds = new Set(
-          sessions
-            .filter((session) => new Date(session.lastActivityAt) < cutoff)
-            .map((session) => session.id),
-        )
-
         const current = yield* SynchronizedRef.get(topics)
-        const staleTopics = Array.from(current.values()).filter((topic) =>
-          staleSessionIds.has(topic.sessionId),
-        )
-        const outcomes = yield* Effect.forEach(staleTopics, (topic) =>
-          api.deleteForumTopic(chatId, topic.threadId).pipe(
-            Effect.map(() => ({ topic, deleted: true as const })),
-            Effect.catchAll((cause) =>
-              Effect.succeed({ topic, deleted: false as const, cause }),
+        const outcomes = yield* Effect.forEach(
+          current.values(),
+          (topic) =>
+            accessFor(topic.sessionId).withPermits(1)(
+              Effect.uninterruptibleMask((restore) =>
+                Effect.gen(function* () {
+                  const claimed = yield* registry.claimInactive(
+                    topic.sessionId,
+                    cutoff,
+                  )
+                  if (Option.isNone(claimed)) {
+                    return { status: 'skipped' as const, topic }
+                  }
+
+                  return yield* restore(
+                    api.deleteForumTopic(chatId, topic.threadId),
+                  ).pipe(
+                    Effect.andThen(
+                      SynchronizedRef.update(topics, (currentTopics) => {
+                        const next = new Map(currentTopics)
+                        next.delete(topic.sessionId)
+                        return next
+                      }),
+                    ),
+                    Effect.as({ status: 'deleted' as const, topic }),
+                    Effect.onExit((exit) =>
+                      Exit.isFailure(exit)
+                        ? registry.restoreIfAbsent(claimed.value).pipe(
+                            Effect.asVoid,
+                          )
+                        : Effect.void,
+                    ),
+                  )
+                }),
+              ).pipe(
+                Effect.catchAll((cause) =>
+                  Effect.succeed({
+                    status: 'failed' as const,
+                    topic,
+                    cause,
+                  }),
+                ),
+              ),
             ),
-          ),
+          { concurrency: 4 },
         )
-        const removed = outcomes
-          .filter((outcome) => outcome.deleted)
-          .map((outcome) => outcome.topic)
-
-        for (const topic of removed) {
-          yield* SynchronizedRef.update(topics, (currentTopics) => {
-            const next = new Map(currentTopics)
-            next.delete(topic.sessionId)
-            return next
-          })
-          yield* registry.remove(topic.sessionId)
-        }
-
-        const failed = outcomes.find((outcome) => !outcome.deleted)
-        if (failed !== undefined && !failed.deleted) {
+        const failed = outcomes.find((outcome) => outcome.status === 'failed')
+        if (failed !== undefined && failed.status === 'failed') {
           return yield* new TopicManagerError({
             message: `failed to delete topic for ${failed.topic.sessionId}`,
             cause: failed.cause,
           })
         }
 
-        return removed
+        return outcomes.flatMap((outcome) =>
+          outcome.status === 'deleted' ? [outcome.topic] : [],
+        )
       }).pipe(
         Effect.mapError(mapError('failed to clean up inactive topics')),
       ),
