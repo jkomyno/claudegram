@@ -154,11 +154,38 @@ describe('operations', () => {
     ).toEqual(['bot-token', 'owner-user-id', 'daemon', 'tmux'])
   })
 
+  it('reports setup cancellation without leaking an internal error', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'claudegram-wizard-'))
+    temporaryDirectories.push(directory)
+
+    const result = await Effect.runPromise(
+      runSetupWizard({
+        baseConfig: makeConfig(directory),
+        prompt: {
+          secret: async () => {
+            throw new Error('Setup cancelled.')
+          },
+          text: async () => '',
+          confirm: async () => true,
+          note: async () => {},
+        },
+      }).pipe(Effect.either, Effect.provide(FetchHttpClient.layer)),
+    )
+
+    expect(result).toMatchObject({
+      _tag: 'Left',
+      left: { _tag: 'WizardError', message: 'Setup cancelled.' },
+    })
+  })
+
   it('runs setup from token discovery through hooks and daemon launch', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'claudegram-wizard-'))
     temporaryDirectories.push(directory)
     const notes: Array<string> = []
-    const answers = ['fake-token', '']
+    const confirmations: Array<string> = []
+    const sentMessages: Array<{ readonly chatId: number; readonly text: string }> = []
+    let privacyConfirmationCount = 0
+    const answers = ['123:fake-token', '']
     const api = TelegramApi.of({
       getMe: () =>
         Effect.succeed({
@@ -206,7 +233,14 @@ describe('operations', () => {
             },
           },
         ]),
-      sendMessage: () => Effect.die('not used'),
+      sendMessage: (options) => {
+        sentMessages.push({ chatId: options.chatId, text: options.text })
+        return Effect.succeed({
+          message_id: 3,
+          text: options.text,
+          chat: { id: options.chatId, type: 'supergroup', is_forum: true },
+        })
+      },
       createForumTopic: () => Effect.die('not used'),
       deleteForumTopic: () => Effect.void,
       answerCallbackQuery: () => Effect.void,
@@ -218,7 +252,14 @@ describe('operations', () => {
         prompt: {
           secret: async () => answers.shift() ?? '',
           text: async () => answers.shift() ?? '',
-          confirm: async () => true,
+          confirm: async (message) => {
+            confirmations.push(message)
+            if (message.startsWith('Have you disabled privacy mode')) {
+              privacyConfirmationCount += 1
+              return privacyConfirmationCount > 1
+            }
+            return true
+          },
           note: async (message) => {
             notes.push(message)
           },
@@ -242,19 +283,40 @@ describe('operations', () => {
       ownerUserId: 424242,
       daemon: { status: 'running', pid: 12345 },
     })
-    expect(notes[0]).toContain(
+    expect(notes.join('\n')).toContain('Create your Telegram bot')
+    expect(notes.join('\n')).toContain('/newbot')
+    expect(notes.join('\n')).toContain('Disable privacy mode')
+    expect(notes.join('\n')).toContain(
+      'Privacy mode must be disabled before setup can continue.',
+    )
+    expect(notes.join('\n')).toContain('Create or prepare a forum')
+    expect(notes.join('\n')).toContain('Manage Topics')
+    expect(notes.join('\n')).toContain(
       '/claudegram_setup@claudegram_test_bot setup-code',
     )
+    expect(
+      confirmations.filter(
+        (message) =>
+          message ===
+          'Have you disabled privacy mode for @claudegram_test_bot?',
+      ),
+    ).toHaveLength(2)
     expect(notes.at(-1)).toBe(
-      'Using Test group (-100123). Authorized Telegram user: 424242.',
+      'Telegram setup verified. The bot can post in Test group.',
     )
+    expect(sentMessages).toEqual([
+      {
+        chatId: -100123,
+        text: 'claudegram Telegram setup check passed. This bot can post in this forum.',
+      },
+    ])
     const saved = JSON.parse(await readFile(result.configPath, 'utf8')) as {
       readonly botToken: string
       readonly chatId: number
       readonly ownerUserId: number
     }
     expect(saved).toMatchObject({
-      botToken: 'fake-token',
+      botToken: '123:fake-token',
       chatId: -100123,
       ownerUserId: 424242,
     })

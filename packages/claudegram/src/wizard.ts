@@ -51,6 +51,17 @@ export interface WizardOptions {
   readonly setupCode?: () => string
 }
 
+const runPrompt = <A>(operation: () => Promise<A>): Effect.Effect<A, WizardError> =>
+  Effect.tryPromise({
+    try: operation,
+    catch: (cause) =>
+      new WizardError({
+        message:
+          cause instanceof Error ? cause.message : 'Interactive setup failed.',
+        cause,
+      }),
+  })
+
 const writeConfig = async (
   config: ClaudegramConfig,
   botToken: string,
@@ -120,7 +131,21 @@ export const runSetupWizard = (
   options: WizardOptions,
 ): Effect.Effect<WizardResult, WizardError, HttpClient.HttpClient> =>
   Effect.gen(function* () {
-    const token = (yield* Effect.promise(() =>
+    yield* runPrompt(() =>
+      options.prompt.note(
+        [
+          'Step 1 of 4 — Create your Telegram bot',
+          '',
+          '1. Open @BotFather in Telegram.',
+          '2. Send /newbot.',
+          '3. Choose a display name and a username ending in "bot".',
+          '4. Copy the API token BotFather gives you.',
+          '',
+          'The token is entered privately and is stored only in your user config.',
+        ].join('\n'),
+      ),
+    )
+    const token = (yield* runPrompt(() =>
       options.prompt.secret('Telegram bot token'),
     )).trim()
     if (token.length === 0) {
@@ -130,16 +155,68 @@ export const runSetupWizard = (
     const api = yield* (options.makeApi?.(token) ??
       makeTelegramApi({ botToken: token }))
     const bot = yield* api.getMe()
+    const botName = bot.username ?? bot.first_name
+
+    yield* runPrompt(() =>
+      options.prompt.note(
+        [
+          `Connected to @${botName}.`,
+          '',
+          'Step 2 of 4 — Disable privacy mode',
+          '',
+          '1. Open @BotFather and send /mybots.',
+          `2. Select @${botName}.`,
+          '3. Open Bot Settings, then Group Privacy.',
+          '4. Turn privacy mode off so Telegram messages can reach Claude.',
+        ].join('\n'),
+      ),
+    )
+
+    let privacyModeDisabled = false
+    while (!privacyModeDisabled) {
+      privacyModeDisabled = yield* runPrompt(() =>
+        options.prompt.confirm(
+          `Have you disabled privacy mode for @${botName}?`,
+          false,
+        ),
+      )
+      if (!privacyModeDisabled) {
+        yield* runPrompt(() =>
+          options.prompt.note(
+            'Privacy mode must be disabled before setup can continue. Complete the BotFather step, then answer yes.',
+          ),
+        )
+      }
+    }
+
     const setupCode = options.setupCode?.() ?? randomUUID().slice(0, 8)
     const setupCommand = `/claudegram_setup${
       bot.username === undefined ? '' : `@${bot.username}`
     } ${setupCode}`
-    yield* Effect.promise(() =>
+    yield* runPrompt(() =>
       options.prompt.note(
-        `Connected to @${bot.username ?? bot.first_name}. Add it to the Telegram supergroup with topics, then send this command there from your own account:\n\n${setupCommand}\n\nThis discovers the group and authorizes your Telegram account.`,
+        [
+          'Step 3 of 4 — Create or prepare a forum',
+          '',
+          'Use an existing supergroup:',
+          `1. Add @${botName}.`,
+          '2. Enable Topics in the group settings.',
+          '3. Make the bot an admin with Post Messages and Manage Topics permissions.',
+          '',
+          'Or create a new group:',
+          `1. Create the group and add @${botName}.`,
+          '2. Enable Topics to turn it into a forum supergroup.',
+          '3. Make the bot an admin with Post Messages and Manage Topics permissions.',
+          '',
+          'When the forum is ready, send this command there from your own account:',
+          '',
+          setupCommand,
+          '',
+          'This discovers the forum and authorizes your Telegram account.',
+        ].join('\n'),
       ),
     )
-    yield* Effect.promise(() =>
+    yield* runPrompt(() =>
       options.prompt.text('Press Enter after sending the setup command'),
     )
 
@@ -160,9 +237,35 @@ export const runSetupWizard = (
       return yield* new WizardError({ message: 'Telegram setup was not found.' })
     }
     const { chatId, ownerUserId } = target
-    yield* Effect.promise(() =>
+    yield* runPrompt(() =>
       options.prompt.note(
-        `Using ${target.chatTitle} (${chatId}). Authorized Telegram user: ${ownerUserId}.`,
+        [
+          `Using ${target.chatTitle} (${chatId}). Authorized Telegram user: ${ownerUserId}.`,
+          '',
+          'Step 4 of 4 — Verify bot permissions',
+          '',
+          'Sending a test message to confirm that the bot can post in the forum.',
+        ].join('\n'),
+      ),
+    )
+    yield* api
+      .sendMessage({
+        chatId,
+        text: 'claudegram Telegram setup check passed. This bot can post in this forum.',
+      })
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new WizardError({
+              message:
+                'The bot could not post in the forum. Make it an admin with Post Messages and Manage Topics permissions, then run setup again.',
+              cause,
+            }),
+        ),
+      )
+    yield* runPrompt(() =>
+      options.prompt.note(
+        `Telegram setup verified. The bot can post in ${target.chatTitle}.`,
       ),
     )
 
@@ -180,7 +283,7 @@ export const runSetupWizard = (
     const hooks = yield* (options.installManagedHooks ?? installHooks)({
       scope: 'global',
     })
-    const shouldStart = yield* Effect.promise(() =>
+    const shouldStart = yield* runPrompt(() =>
       options.prompt.confirm('Start the claudegram daemon now?', true),
     )
     const daemon = shouldStart
