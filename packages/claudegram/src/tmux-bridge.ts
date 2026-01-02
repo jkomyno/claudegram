@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 
 import * as Context from 'effect/Context'
 import * as Data from 'effect/Data'
+import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 
@@ -32,9 +33,11 @@ export interface TmuxBridgeOptions {
   readonly executable?: string
   readonly socketName?: string
   readonly commandTimeoutMilliseconds?: number
+  readonly submitDelayMilliseconds?: number
 }
 
 const DEFAULT_COMMAND_TIMEOUT_MILLISECONDS = 5_000
+const DEFAULT_SUBMIT_DELAY_MILLISECONDS = 1_000
 
 const paneFor = (
   session: Session,
@@ -58,6 +61,8 @@ export const makeTmuxBridge = (
     options.socketName === undefined ? [] : ['-L', options.socketName]
   const commandTimeoutMilliseconds =
     options.commandTimeoutMilliseconds ?? DEFAULT_COMMAND_TIMEOUT_MILLISECONDS
+  const submitDelayMilliseconds =
+    options.submitDelayMilliseconds ?? DEFAULT_SUBMIT_DELAY_MILLISECONDS
 
   const run = (args: ReadonlyArray<string>, message: string) =>
     Effect.tryPromise({
@@ -102,8 +107,9 @@ export const makeTmuxBridge = (
           ['send-keys', '-t', pane, '-l', '--', text],
           `failed to send text to tmux pane ${pane}`,
         )
+        yield* Effect.sleep(Duration.millis(submitDelayMilliseconds))
         yield* run(
-          ['send-keys', '-t', pane, 'Enter'],
+          ['send-keys', '-t', pane, '-l', '--', '\r'],
           `failed to submit text in tmux pane ${pane}`,
         )
       }),

@@ -93,7 +93,10 @@ describe.skipIf(!enabled)('tmux bridge e2e', () => {
   })
 
   it('submits literal text and interrupts the running command', async () => {
-    const bridge = makeTmuxBridge({ socketName })
+    const bridge = makeTmuxBridge({
+      socketName,
+      submitDelayMilliseconds: 10,
+    })
     const session = testSession(pane)
 
     await Effect.runPromise(
