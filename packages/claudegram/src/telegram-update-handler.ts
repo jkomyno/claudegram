@@ -79,6 +79,8 @@ export const handleTelegramUpdate = (
       const message = update.message
       if (
         config.chatId === undefined ||
+        config.ownerUserId === undefined ||
+        message.from?.id !== config.ownerUserId ||
         message.chat.id !== config.chatId ||
         message.message_thread_id === undefined ||
         message.text === undefined ||
@@ -108,6 +110,14 @@ export const handleTelegramUpdate = (
       config.chatId === undefined ||
       callback.message.chat.id !== config.chatId
     ) {
+      return
+    }
+
+    if (
+      config.ownerUserId === undefined ||
+      callback.from.id !== config.ownerUserId
+    ) {
+      yield* api.answerCallbackQuery(callback.id, 'Not authorized.')
       return
     }
 

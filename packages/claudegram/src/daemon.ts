@@ -324,9 +324,14 @@ export const startDaemon = (
 ): Effect.Effect<DaemonState, DaemonError> =>
   Effect.tryPromise({
     try: async () => {
-      if (config.botToken === undefined || config.chatId === undefined) {
+      if (
+        config.botToken === undefined ||
+        config.chatId === undefined ||
+        config.ownerUserId === undefined
+      ) {
         throw new DaemonError({
-          message: 'bot token and Telegram chat id are required before starting',
+          message:
+            'bot token, Telegram chat id, and owner user id are required before starting',
         })
       }
 
@@ -558,9 +563,14 @@ export const runDaemon = (
 ): Effect.Effect<void, DaemonError, HttpClient.HttpClient> =>
   Effect.scoped(
     Effect.gen(function* () {
-      if (config.botToken === undefined || config.chatId === undefined) {
+      if (
+        config.botToken === undefined ||
+        config.chatId === undefined ||
+        config.ownerUserId === undefined
+      ) {
         return yield* new DaemonError({
-          message: 'bot token and Telegram chat id are required',
+          message:
+            'bot token, Telegram chat id, and owner user id are required',
         })
       }
 

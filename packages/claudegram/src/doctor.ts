@@ -62,6 +62,19 @@ export const runDoctor = (
             name: 'chat-id',
             status: 'pass',
             message: `Telegram chat id ${options.config.chatId} is configured.`,
+        },
+    )
+    checks.push(
+      options.config.ownerUserId === undefined
+        ? {
+            name: 'owner-user-id',
+            status: 'fail',
+            message: 'Telegram owner user id is missing. Run claudegram setup.',
+          }
+        : {
+            name: 'owner-user-id',
+            status: 'pass',
+            message: `Telegram user ${options.config.ownerUserId} is authorized.`,
           },
     )
 

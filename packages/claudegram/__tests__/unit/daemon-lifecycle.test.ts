@@ -35,6 +35,7 @@ afterEach(async () => {
 const makeConfig = (directory: string): ClaudegramConfig => ({
   botToken: 'fake-token',
   chatId: -100123,
+  ownerUserId: 424242,
   socketPath: join(directory, 'state', 'daemon.sock'),
   topicTtlHours: 72,
   verbose: false,
@@ -109,6 +110,26 @@ describe('daemon lifecycle', () => {
     expect(launches).toMatchObject([
       { logPath: daemonPaths(config).logPath },
     ])
+  })
+
+  it('refuses to start without an authorized Telegram owner', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'claudegram-lifecycle-'))
+    temporaryDirectories.push(directory)
+    const config = { ...makeConfig(directory), ownerUserId: undefined }
+    let launches = 0
+
+    await expect(
+      Effect.runPromise(
+        startDaemon(config, {
+          service: { homeDirectory: directory, platform: 'darwin' },
+          launchDaemon: async () => {
+            launches += 1
+          },
+        }),
+      ),
+    ).rejects.toThrow('owner user id')
+
+    expect(launches).toBe(0)
   })
 
   it('fails start when the launched daemon never becomes ready', async () => {

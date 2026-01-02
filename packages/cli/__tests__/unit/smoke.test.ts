@@ -72,15 +72,16 @@ describe('CLI', () => {
     })
   })
 
-  it('rejects non-interactive setup without required config', async () => {
+  it('rejects non-interactive setup without an authorized owner', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'claudegram-cli-'))
     temporaryDirectories.push(directory)
     vi.stubEnv('CLAUDEGRAM_CONFIG', join(directory, 'missing-config.json'))
-    vi.stubEnv('CLAUDEGRAM_BOT_TOKEN', undefined)
-    vi.stubEnv('CLAUDEGRAM_CHAT_ID', undefined)
+    vi.stubEnv('CLAUDEGRAM_BOT_TOKEN', 'fake-token')
+    vi.stubEnv('CLAUDEGRAM_CHAT_ID', '-100123')
+    vi.stubEnv('CLAUDEGRAM_OWNER_USER_ID', undefined)
 
     await expect(run(['setup', '--no-input'])).rejects.toThrow(
-      '--no-input requires a bot token and chat id',
+      '--no-input requires a bot token, chat id, and owner user id',
     )
   })
 

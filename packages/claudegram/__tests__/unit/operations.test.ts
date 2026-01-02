@@ -34,6 +34,7 @@ afterEach(async () => {
 const makeConfig = (directory: string): ClaudegramConfig => ({
   botToken: 'fake-token',
   chatId: -100123,
+  ownerUserId: 424242,
   socketPath: join(directory, 'state', 'daemon.sock'),
   topicTtlHours: 72,
   verbose: false,
@@ -129,7 +130,7 @@ describe('operations', () => {
     expect(unit).toContain('WantedBy=default.target')
   })
 
-  it('diagnoses a missing token, dead socket, and missing tmux', async () => {
+  it('diagnoses missing Telegram credentials, a dead socket, and missing tmux', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'claudegram-doctor-'))
     temporaryDirectories.push(directory)
     const report = await Effect.runPromise(
@@ -137,6 +138,7 @@ describe('operations', () => {
         config: {
           ...makeConfig(directory),
           botToken: undefined,
+          ownerUserId: undefined,
         },
         homeDirectory: directory,
         tmuxExecutable: join(directory, 'missing-tmux'),
@@ -149,7 +151,7 @@ describe('operations', () => {
       report.checks
         .filter((check) => check.status === 'fail')
         .map((check) => check.name),
-    ).toEqual(['bot-token', 'daemon', 'tmux'])
+    ).toEqual(['bot-token', 'owner-user-id', 'daemon', 'tmux'])
   })
 
   it('runs setup from token discovery through hooks and daemon launch', async () => {

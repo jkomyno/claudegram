@@ -79,9 +79,15 @@ const setupCommand = Command.make(
     Effect.gen(function* () {
       const config = yield* loadConfig()
       if (noInput) {
-        if (config.botToken === undefined || config.chatId === undefined) {
+        if (
+          config.botToken === undefined ||
+          config.chatId === undefined ||
+          config.ownerUserId === undefined
+        ) {
           return yield* Effect.fail(
-            new Error('--no-input requires a bot token and chat id in env or config.'),
+            new Error(
+              '--no-input requires a bot token, chat id, and owner user id in env or config.',
+            ),
           )
         }
         const hooks = yield* installHooks({ scope: 'global' })

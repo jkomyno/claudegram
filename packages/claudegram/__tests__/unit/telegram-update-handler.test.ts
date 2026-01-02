@@ -22,11 +22,17 @@ describe('handleTelegramUpdate', () => {
     const config: ClaudegramConfig = {
       botToken: 'fake-token',
       chatId: -100123,
+      ownerUserId: 424242,
       socketPath: '/tmp/claudegram.sock',
       topicTtlHours: 72,
       verbose: false,
       configPath: '/tmp/claudegram.json',
     }
+    const owner = {
+      id: 424242,
+      is_bot: false,
+      first_name: 'Alberto',
+    } as const
     const registry = await Effect.runPromise(makeSessionRegistry)
     const session = await Effect.runPromise(
       registry.record(
@@ -135,6 +141,7 @@ describe('handleTelegramUpdate', () => {
         message_id: 1,
         message_thread_id: 101,
         text: 'continue with the tests',
+        from: owner,
         chat: { id: -100123, type: 'supergroup', is_forum: true },
       },
     })
@@ -144,6 +151,7 @@ describe('handleTelegramUpdate', () => {
         message_id: 2,
         message_thread_id: 101,
         text: ' STOP ',
+        from: owner,
         chat: { id: -100123, type: 'supergroup', is_forum: true },
       },
     })
@@ -151,7 +159,7 @@ describe('handleTelegramUpdate', () => {
       update_id: 3,
       callback_query: {
         id: 'callback-allow',
-        from: { id: 424242, is_bot: false, first_name: 'Alberto' },
+        from: owner,
         data: 'cgm:p:allow',
         message: {
           message_id: 3,
@@ -164,7 +172,7 @@ describe('handleTelegramUpdate', () => {
       update_id: 4,
       callback_query: {
         id: 'callback-reply',
-        from: { id: 424242, is_bot: false, first_name: 'Alberto' },
+        from: owner,
         data: 'cgm:r:reply',
         message: {
           message_id: 4,
@@ -177,7 +185,7 @@ describe('handleTelegramUpdate', () => {
       update_id: 5,
       callback_query: {
         id: 'callback-wrong-session',
-        from: { id: 424242, is_bot: false, first_name: 'Alberto' },
+        from: owner,
         data: 'cgm:p:wrong-session',
         message: {
           message_id: 5,
@@ -192,7 +200,31 @@ describe('handleTelegramUpdate', () => {
         message_id: 6,
         message_thread_id: 101,
         text: 'wrong chat',
+        from: owner,
         chat: { id: -100999, type: 'supergroup', is_forum: true },
+      },
+    })
+    await runUpdate({
+      update_id: 7,
+      message: {
+        message_id: 7,
+        message_thread_id: 101,
+        text: 'unauthorized message',
+        from: { id: 999, is_bot: false, first_name: 'Someone' },
+        chat: { id: -100123, type: 'supergroup', is_forum: true },
+      },
+    })
+    await runUpdate({
+      update_id: 8,
+      callback_query: {
+        id: 'callback-unauthorized',
+        from: { id: 999, is_bot: false, first_name: 'Someone' },
+        data: 'cgm:p:allow',
+        message: {
+          message_id: 8,
+          message_thread_id: 101,
+          chat: { id: -100123, type: 'supergroup', is_forum: true },
+        },
       },
     })
 
@@ -206,6 +238,7 @@ describe('handleTelegramUpdate', () => {
       { id: 'callback-allow', text: 'Sent to Claude.' },
       { id: 'callback-reply', text: 'Sent to Claude.' },
       { id: 'callback-wrong-session', text: 'This action has expired.' },
+      { id: 'callback-unauthorized', text: 'Not authorized.' },
     ])
   })
 })

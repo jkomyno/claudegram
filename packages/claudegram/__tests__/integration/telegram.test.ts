@@ -178,6 +178,7 @@ const startFakeTelegram = async (): Promise<FakeTelegram> => {
 const config: ClaudegramConfig = {
   botToken: 'fake-token',
   chatId: -100123,
+  ownerUserId: 424242,
   socketPath: '/tmp/claudegram-test.sock',
   topicTtlHours: 72,
   verbose: false,
