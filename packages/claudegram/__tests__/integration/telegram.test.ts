@@ -375,9 +375,17 @@ describe('Telegram bridge', () => {
 
     const permissionMarkup = sendCalls[4]?.body.reply_markup as {
       readonly inline_keyboard: ReadonlyArray<
-        ReadonlyArray<{ readonly callback_data: string }>
+        ReadonlyArray<{
+          readonly callback_data: string
+          readonly text: string
+        }>
       >
     }
+    expect(
+      permissionMarkup.inline_keyboard.map((row) =>
+        row.map((button) => button.text),
+      ),
+    ).toEqual([['✅ Allow', '❌ Deny'], ['🛑 Abort']])
     const allowCallback = permissionMarkup.inline_keyboard[0]?.[0]?.callback_data
     const denyCallback = permissionMarkup.inline_keyboard[0]?.[1]?.callback_data
     expect(allowCallback).toMatch(/^cgm:p:/u)
@@ -407,17 +415,25 @@ describe('Telegram bridge', () => {
 
     const questionMarkup = sendCalls[5]?.body.reply_markup as {
       readonly inline_keyboard: ReadonlyArray<
-        ReadonlyArray<{ readonly callback_data: string }>
+        ReadonlyArray<{
+          readonly callback_data: string
+          readonly text: string
+        }>
       >
     }
-    const replyCallback = questionMarkup.inline_keyboard[0]?.[0]?.callback_data
-    const replyAction = await Effect.runPromise(
-      notifier.resolveCallback(replyCallback ?? '', firstSession),
+    expect(
+      questionMarkup.inline_keyboard.map((row) =>
+        row.map((button) => button.text),
+      ),
+    ).toEqual([['Stable'], ['Beta'], ['✍️ Custom reply', '🛑 Abort']])
+    const customReplyCallback =
+      questionMarkup.inline_keyboard[2]?.[0]?.callback_data
+    const customReplyAction = await Effect.runPromise(
+      notifier.resolveCallback(customReplyCallback ?? '', firstSession),
     )
-    expect(Option.getOrThrow(replyAction)).toEqual({
-      type: 'reply',
+    expect(Option.getOrThrow(customReplyAction)).toEqual({
+      type: 'await-reply',
       sessionId: firstSession,
-      text: 'Stable',
     })
   })
 
@@ -447,6 +463,7 @@ describe('Telegram bridge', () => {
     }
     const firstAllow = firstMarkup.inline_keyboard[0]?.[0]?.callback_data ?? ''
     const firstDeny = firstMarkup.inline_keyboard[0]?.[1]?.callback_data ?? ''
+    const firstAbort = firstMarkup.inline_keyboard[1]?.[0]?.callback_data ?? ''
 
     await Effect.runPromise(permission())
     const sendCalls = fake.calls.filter((call) => call.method === 'sendMessage')
@@ -457,6 +474,7 @@ describe('Telegram bridge', () => {
     }
     const secondAllow = secondMarkup.inline_keyboard[0]?.[0]?.callback_data ?? ''
     const secondDeny = secondMarkup.inline_keyboard[0]?.[1]?.callback_data ?? ''
+    const secondAbort = secondMarkup.inline_keyboard[1]?.[0]?.callback_data ?? ''
 
     expect(secondAllow).not.toBe(firstAllow)
     expect(
@@ -473,6 +491,11 @@ describe('Telegram bridge', () => {
     ).toBe(true)
     expect(
       Option.isNone(
+        await Effect.runPromise(notifier.resolveCallback(firstAbort, sessionId)),
+      ),
+    ).toBe(true)
+    expect(
+      Option.isNone(
         await Effect.runPromise(
           notifier.resolveCallback(secondAllow, 'another-session'),
         ),
@@ -481,10 +504,17 @@ describe('Telegram bridge', () => {
     expect(
       Option.getOrThrow(
         await Effect.runPromise(
+          notifier.resolveCallback(secondAbort, sessionId),
+        ),
+      ),
+    ).toEqual({ type: 'abort', sessionId })
+    expect(
+      Option.isNone(
+        await Effect.runPromise(
           notifier.resolveCallback(secondAllow, sessionId),
         ),
       ),
-    ).toMatchObject({ decision: 'allow', sessionId })
+    ).toBe(true)
     expect(
       Option.isNone(
         await Effect.runPromise(

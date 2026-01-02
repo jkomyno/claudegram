@@ -45,17 +45,38 @@ const applyAction = (
 ): Effect.Effect<void, unknown, TmuxBridge> =>
   Effect.gen(function* () {
     const tmux = yield* TmuxBridge
-    if (action.type === 'next-question') {
-      return
+    switch (action.type) {
+      case 'next-question':
+      case 'await-reply': {
+        return
+      }
+      case 'abort': {
+        yield* tmux.interrupt(session)
+        return
+      }
+      case 'reply': {
+        yield* tmux.sendText(session, action.text)
+        return
+      }
+      case 'permission': {
+        yield* tmux.sendText(session, action.decision === 'allow' ? 'y' : 'n')
+      }
     }
-
-    if (action.type === 'reply') {
-      yield* tmux.sendText(session, action.text)
-      return
-    }
-
-    yield* tmux.sendText(session, action.decision === 'allow' ? 'y' : 'n')
   })
+
+const callbackAnswer = (action: PendingTelegramAction): string => {
+  switch (action.type) {
+    case 'next-question':
+      return 'Answer saved.'
+    case 'await-reply':
+      return 'Type your reply in the chat.'
+    case 'abort':
+      return 'Session interrupted.'
+    case 'permission':
+    case 'reply':
+      return 'Sent to Claude.'
+  }
+}
 
 export const handleTelegramUpdate = (
   update: TelegramUpdate,
@@ -142,12 +163,7 @@ export const handleTelegramUpdate = (
     }
 
     yield* applyAction(session.value, action.value)
-    yield* api.answerCallbackQuery(
-      callback.id,
-      action.value.type === 'next-question'
-        ? 'Answer saved.'
-        : 'Sent to Claude.',
-    )
+    yield* api.answerCallbackQuery(callback.id, callbackAnswer(action.value))
   }).pipe(
     Effect.mapError(mapUpdateError(`failed to handle Telegram update ${update.update_id}`)),
   )

@@ -65,6 +65,14 @@ export type PendingTelegramAction =
       readonly type: 'next-question'
       readonly sessionId: string
     }
+  | {
+      readonly type: 'await-reply'
+      readonly sessionId: string
+    }
+  | {
+      readonly type: 'abort'
+      readonly sessionId: string
+    }
 
 export interface NotifyResult {
   readonly sent: boolean
@@ -105,7 +113,10 @@ type Question =
   typeof AskUserQuestionEventSchema.Type['tool_input']['questions'][number]
 
 type PendingCallbackAction =
-  | Extract<PendingTelegramAction, { readonly type: 'permission' }>
+  | Extract<
+      PendingTelegramAction,
+      { readonly type: 'permission' | 'await-reply' | 'abort' }
+    >
   | {
       readonly type: 'question'
       readonly sessionId: string
@@ -196,8 +207,12 @@ const questionActions = (
   questionIndex: number,
 ): ReadonlyArray<PendingCallbackAction> => {
   const question = questions[questionIndex]
-  return (
-    question?.options.map((option) => ({
+  if (question === undefined) {
+    return []
+  }
+
+  return [
+    ...question.options.map((option) => ({
       type: 'question' as const,
       sessionId,
       threadId,
@@ -205,8 +220,10 @@ const questionActions = (
       answers,
       questionIndex,
       answer: option.label,
-    })) ?? []
-  )
+    })),
+    { type: 'await-reply' as const, sessionId },
+    { type: 'abort' as const, sessionId },
+  ]
 }
 
 export const makeNotifierWithOptions = (
@@ -258,15 +275,22 @@ export const makeNotifierWithOptions = (
     return SynchronizedRef.update(pendingActions, (current) => {
       const next = new Map<string, PendingCallback>()
       const sessionId = actions[0]?.sessionId
+      const invalidatedInteractionIds = new Set<string>()
+      if (invalidatePermissionForSession) {
+        for (const pending of current.values()) {
+          if (
+            pending.action.type === 'permission' &&
+            pending.action.sessionId === sessionId
+          ) {
+            invalidatedInteractionIds.add(pending.interactionId)
+          }
+        }
+      }
       for (const [token, pending] of current) {
         if (pending.expiresAt <= issuedAt.getTime()) {
           continue
         }
-        if (
-          invalidatePermissionForSession &&
-          pending.action.type === 'permission' &&
-          pending.action.sessionId === sessionId
-        ) {
+        if (invalidatedInteractionIds.has(pending.interactionId)) {
           continue
         }
         next.set(token, pending)
@@ -291,12 +315,24 @@ export const makeNotifierWithOptions = (
     return {
       text: questionText(question, questionIndex, questions.length),
       replyMarkup: {
-        inline_keyboard: question.options.map((option, index) => [
-          {
-            text: truncate(option.label, 40),
-            callback_data: tokens[index] ?? '',
-          },
-        ]),
+        inline_keyboard: [
+          ...question.options.map((option, index) => [
+            {
+              text: truncate(option.label, 40),
+              callback_data: tokens[index] ?? '',
+            },
+          ]),
+          [
+            {
+              text: '✍️ Custom reply',
+              callback_data: tokens[question.options.length] ?? '',
+            },
+            {
+              text: '🛑 Abort',
+              callback_data: tokens[question.options.length + 1] ?? '',
+            },
+          ],
+        ],
       },
     }
   }
@@ -333,29 +369,29 @@ export const makeNotifierWithOptions = (
         return Option.none()
       }
 
-      const actions: ReadonlyArray<PendingCallbackAction> = (
-        ['allow', 'deny'] as const
-      ).map((decision) => ({
-        type: 'permission',
-        sessionId,
-        ...(tool.value.tool_use_id === undefined
-          ? {}
-          : { toolUseId: tool.value.tool_use_id }),
-        decision,
-      }))
-      const [allowToken = '', denyToken = ''] = yield* registerActions(
-        actions,
-        true,
-      )
+      const actions: ReadonlyArray<PendingCallbackAction> = [
+        ...(['allow', 'deny'] as const).map((decision) => ({
+          type: 'permission' as const,
+          sessionId,
+          ...(tool.value.tool_use_id === undefined
+            ? {}
+            : { toolUseId: tool.value.tool_use_id }),
+          decision,
+        })),
+        { type: 'abort', sessionId },
+      ]
+      const [allowToken = '', denyToken = '', abortToken = ''] =
+        yield* registerActions(actions, true)
 
       return Option.some({
         text: `🔐 Permission requested\n${summarizeTool(tool.value)}`,
         replyMarkup: {
           inline_keyboard: [
             [
-              { text: 'Allow', callback_data: allowToken },
-              { text: 'Deny', callback_data: denyToken },
+              { text: '✅ Allow', callback_data: allowToken },
+              { text: '❌ Deny', callback_data: denyToken },
             ],
+            [{ text: '🛑 Abort', callback_data: abortToken }],
           ],
         },
       })
@@ -498,7 +534,7 @@ export const makeNotifierWithOptions = (
               return Effect.succeed([Option.none(), next] as const)
           }
 
-          if (pending.action.type === 'permission') {
+          if (pending.action.type !== 'question') {
               return Effect.succeed([
                 Option.some<CallbackResolution>({ action: pending.action }),
                 next,

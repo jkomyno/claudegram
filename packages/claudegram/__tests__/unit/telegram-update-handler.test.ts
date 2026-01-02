@@ -89,6 +89,14 @@ describe('handleTelegramUpdate', () => {
         { type: 'reply', sessionId: session.id, text: 'Stable' } as const,
       ],
       [
+        'cgm:r:custom',
+        { type: 'await-reply', sessionId: session.id } as const,
+      ],
+      [
+        'cgm:r:abort',
+        { type: 'abort', sessionId: session.id } as const,
+      ],
+      [
         'cgm:p:wrong-session',
         {
           type: 'permission',
@@ -184,9 +192,9 @@ describe('handleTelegramUpdate', () => {
     await runUpdate({
       update_id: 5,
       callback_query: {
-        id: 'callback-wrong-session',
+        id: 'callback-custom',
         from: owner,
-        data: 'cgm:p:wrong-session',
+        data: 'cgm:r:custom',
         message: {
           message_id: 5,
           message_thread_id: 101,
@@ -199,15 +207,51 @@ describe('handleTelegramUpdate', () => {
       message: {
         message_id: 6,
         message_thread_id: 101,
+        text: 'Use the custom release channel',
+        from: owner,
+        chat: { id: -100123, type: 'supergroup', is_forum: true },
+      },
+    })
+    await runUpdate({
+      update_id: 7,
+      callback_query: {
+        id: 'callback-abort',
+        from: owner,
+        data: 'cgm:r:abort',
+        message: {
+          message_id: 7,
+          message_thread_id: 101,
+          chat: { id: -100123, type: 'supergroup', is_forum: true },
+        },
+      },
+    })
+    await runUpdate({
+      update_id: 8,
+      callback_query: {
+        id: 'callback-wrong-session',
+        from: owner,
+        data: 'cgm:p:wrong-session',
+        message: {
+          message_id: 8,
+          message_thread_id: 101,
+          chat: { id: -100123, type: 'supergroup', is_forum: true },
+        },
+      },
+    })
+    await runUpdate({
+      update_id: 9,
+      message: {
+        message_id: 9,
+        message_thread_id: 101,
         text: 'wrong chat',
         from: owner,
         chat: { id: -100999, type: 'supergroup', is_forum: true },
       },
     })
     await runUpdate({
-      update_id: 7,
+      update_id: 10,
       message: {
-        message_id: 7,
+        message_id: 10,
         message_thread_id: 101,
         text: 'unauthorized message',
         from: { id: 999, is_bot: false, first_name: 'Someone' },
@@ -215,13 +259,13 @@ describe('handleTelegramUpdate', () => {
       },
     })
     await runUpdate({
-      update_id: 8,
+      update_id: 11,
       callback_query: {
         id: 'callback-unauthorized',
         from: { id: 999, is_bot: false, first_name: 'Someone' },
         data: 'cgm:p:allow',
         message: {
-          message_id: 8,
+          message_id: 11,
           message_thread_id: 101,
           chat: { id: -100123, type: 'supergroup', is_forum: true },
         },
@@ -233,10 +277,18 @@ describe('handleTelegramUpdate', () => {
       { type: 'interrupt', sessionId: 'session-1' },
       { type: 'text', sessionId: 'session-1', text: 'y' },
       { type: 'text', sessionId: 'session-1', text: 'Stable' },
+      {
+        type: 'text',
+        sessionId: 'session-1',
+        text: 'Use the custom release channel',
+      },
+      { type: 'interrupt', sessionId: 'session-1' },
     ])
     expect(callbackAnswers).toEqual([
       { id: 'callback-allow', text: 'Sent to Claude.' },
       { id: 'callback-reply', text: 'Sent to Claude.' },
+      { id: 'callback-custom', text: 'Type your reply in the chat.' },
+      { id: 'callback-abort', text: 'Session interrupted.' },
       { id: 'callback-wrong-session', text: 'This action has expired.' },
       { id: 'callback-unauthorized', text: 'Not authorized.' },
     ])
