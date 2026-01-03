@@ -157,6 +157,13 @@ export interface TelegramApiOptions {
 
 const DEFAULT_REQUEST_TIMEOUT_MILLISECONDS = 10_000
 const DEFAULT_LONG_POLL_GRACE_MILLISECONDS = 5_000
+const TELEGRAM_BOT_TOKEN_IN_URL = /\/bot[^/\s]+(?=\/)/gu
+
+const safeRequestCause = (cause: unknown): Error => {
+  const message =
+    cause instanceof Error ? cause.message : 'Telegram request failed'
+  return new Error(message.replace(TELEGRAM_BOT_TOKEN_IN_URL, '/bot[REDACTED]'))
+}
 
 export const makeTelegramApi = (
   options: TelegramApiOptions,
@@ -212,7 +219,7 @@ export const makeTelegramApi = (
             : new TelegramApiError({
                 method,
                 message: `Telegram API call ${method} failed`,
-                cause,
+                cause: safeRequestCause(cause),
               }),
         ),
       )

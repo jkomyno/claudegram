@@ -1,5 +1,6 @@
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { inspect } from 'node:util'
 
 import * as FetchHttpClient from '@effect/platform/FetchHttpClient'
 import * as Deferred from 'effect/Deferred'
@@ -236,6 +237,22 @@ const makeTestServices = async (
 }
 
 describe('Telegram bridge', () => {
+  it('redacts the bot token from transport failures', async () => {
+    const botToken = '123456:super-secret-token'
+    const api = await Effect.runPromise(
+      makeTelegramApi({
+        botToken,
+        baseUrl: 'http://127.0.0.1:1',
+        requestTimeoutMilliseconds: 1_000,
+      }).pipe(Effect.provide(FetchHttpClient.layer)),
+    )
+
+    const failure = await Effect.runPromise(Effect.flip(api.getMe()))
+
+    expect(failure).toBeInstanceOf(TelegramApiError)
+    expect(inspect(failure, { depth: null })).not.toContain(botToken)
+  })
+
   it('formats useful events, buttons, mute rules, and topic cleanup', async () => {
     const fake = await startFakeTelegram()
     const { notifier, topics } = await makeTestServices(fake)

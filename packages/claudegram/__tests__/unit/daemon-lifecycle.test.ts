@@ -15,6 +15,7 @@ import {
   daemonPaths,
   installService,
   makeSessionRegistry,
+  readDaemonLogs,
   restartDaemon,
   SessionRegistry,
   startDaemon,
@@ -43,6 +44,23 @@ const makeConfig = (directory: string): ClaudegramConfig => ({
 })
 
 describe('daemon lifecycle', () => {
+  it('redacts the bot token when reading daemon logs', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'claudegram-lifecycle-'))
+    temporaryDirectories.push(directory)
+    const config = makeConfig(directory)
+    const paths = daemonPaths(config)
+    await mkdir(paths.stateDirectory, { recursive: true })
+    await writeFile(
+      paths.logPath,
+      `POST https://api.telegram.org/bot${config.botToken}/getUpdates\n`,
+    )
+
+    const logs = await Effect.runPromise(readDaemonLogs(config))
+
+    expect(logs).toContain('/bot[REDACTED]/getUpdates')
+    expect(logs).not.toContain(config.botToken)
+  })
+
   it('recomputes the topic expiry cutoff on each cleanup cycle', async () => {
     const cutoffs: Array<number> = []
     const manager = {

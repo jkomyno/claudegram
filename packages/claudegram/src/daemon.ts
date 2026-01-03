@@ -693,7 +693,14 @@ export const readDaemonLogs = (
     try: async () => {
       try {
         const content = await readFile(daemonPaths(config).logPath, 'utf8')
-        return content.split('\n').slice(-Math.max(lines, 1) - 1).join('\n')
+        const safeContent =
+          config.botToken === undefined
+            ? content
+            : content.replaceAll(config.botToken, '[REDACTED]')
+        return safeContent
+          .split('\n')
+          .slice(-Math.max(lines, 1) - 1)
+          .join('\n')
       } catch (cause) {
         if (isMissingFile(cause)) return ''
         throw cause
