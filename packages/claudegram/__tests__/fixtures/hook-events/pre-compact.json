@@ -1,0 +1,8 @@
+{
+  "session_id": "session-contract-pre-compact",
+  "transcript_path": "/tmp/claudegram-contract/transcript.jsonl",
+  "cwd": "/tmp/claudegram-contract",
+  "hook_event_name": "PreCompact",
+  "trigger": "manual",
+  "custom_instructions": "Preserve the active task context"
+}

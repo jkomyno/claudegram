@@ -1,0 +1,8 @@
+{
+  "session_id": "session-contract-subagent-stop",
+  "transcript_path": "/tmp/claudegram-contract/transcript.jsonl",
+  "cwd": "/tmp/claudegram-contract",
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "last_assistant_message": "The delegated task is complete."
+}

@@ -1,0 +1,8 @@
+{
+  "session_id": "session-contract-stop",
+  "transcript_path": "/tmp/claudegram-contract/transcript.jsonl",
+  "cwd": "/tmp/claudegram-contract",
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "The task is complete."
+}

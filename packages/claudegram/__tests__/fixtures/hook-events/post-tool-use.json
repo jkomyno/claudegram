@@ -1,0 +1,14 @@
+{
+  "session_id": "session-contract-post-tool-use",
+  "transcript_path": "/tmp/claudegram-contract/transcript.jsonl",
+  "cwd": "/tmp/claudegram-contract",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Read",
+  "tool_use_id": "tool-read-1",
+  "tool_input": {
+    "file_path": "/tmp/claudegram-contract/README.md"
+  },
+  "tool_response": {
+    "content": "# claudegram"
+  }
+}

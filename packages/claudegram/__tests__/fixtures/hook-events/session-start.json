@@ -1,0 +1,7 @@
+{
+  "session_id": "session-contract-session-start",
+  "transcript_path": "/tmp/claudegram-contract/transcript.jsonl",
+  "cwd": "/tmp/claudegram-contract",
+  "hook_event_name": "SessionStart",
+  "source": "startup"
+}

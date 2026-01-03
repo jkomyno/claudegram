@@ -30,16 +30,21 @@ afterEach(async () => {
 })
 
 describe('hook ingress contract', () => {
-  it('round-trips a hook fixture through the unix socket into the registry', async () => {
+  it('round-trips every installed hook event through the unix socket', async () => {
     const temporaryDirectory = await mkdtemp(join(tmpdir(), 'claudegram-test-'))
     temporaryDirectories.push(temporaryDirectory)
     const socketPath = join(temporaryDirectory, 'daemon.sock')
-    const fixturePath = fileURLToPath(
-      new URL('../fixtures/hook-events/notification.json', import.meta.url),
-    )
-    const event = parseHookEvent(
-      JSON.parse(await readFile(fixturePath, 'utf8')),
-    )
+    const fixtureNames = [
+      'session-start',
+      'notification',
+      'pre-tool-use',
+      'permission-request',
+      'post-tool-use',
+      'post-tool-use-failure',
+      'pre-compact',
+      'stop',
+      'subagent-stop',
+    ] as const
     const registry = await Effect.runPromise(makeSessionRegistry)
     const registryLayer = Layer.succeed(SessionRegistry, registry)
     const ingress = await Effect.runPromise(
@@ -47,33 +52,43 @@ describe('hook ingress contract', () => {
     )
 
     try {
-      const acknowledgement = await Effect.runPromise(
-        sendHookEnvelope(
-          socketPath,
-          makeHookEnvelope(
-            event,
-            { host: 'contract-host', tmuxPane: '%42' },
-            new Date('2026-08-13T10:00:00.000Z'),
+      for (const fixtureName of fixtureNames) {
+        const fixturePath = fileURLToPath(
+          new URL(
+            `../fixtures/hook-events/${fixtureName}.json`,
+            import.meta.url,
           ),
-        ),
-      )
+        )
+        const event = parseHookEvent(
+          JSON.parse(await readFile(fixturePath, 'utf8')),
+        )
+        const acknowledgement = await Effect.runPromise(
+          sendHookEnvelope(
+            socketPath,
+            makeHookEnvelope(
+              event,
+              { host: 'contract-host', tmuxPane: '%42' },
+              new Date('2026-08-13T10:00:00.000Z'),
+            ),
+          ),
+        )
 
-      expect(acknowledgement.sessionId).toBe('session-contract-1')
+        expect(acknowledgement.sessionId).toBe(event.session_id)
 
-      const session = Option.getOrThrow(
-        await Effect.runPromise(registry.get('session-contract-1')),
-      )
-      expect(session).toMatchObject({
-        id: 'session-contract-1',
-        host: 'contract-host',
-        tmuxPane: '%42',
-        cwd: '/tmp/claudegram-contract',
-        lastActivityAt: '2026-08-13T10:00:00.000Z',
-        lastEvent: {
-          hook_event_name: 'Notification',
-          notification_type: 'idle_prompt',
-        },
-      })
+        const session = Option.getOrThrow(
+          await Effect.runPromise(registry.get(event.session_id)),
+        )
+        expect(session).toMatchObject({
+          id: event.session_id,
+          host: 'contract-host',
+          tmuxPane: '%42',
+          cwd: '/tmp/claudegram-contract',
+          lastActivityAt: '2026-08-13T10:00:00.000Z',
+          lastEvent: {
+            hook_event_name: event.hook_event_name,
+          },
+        })
+      }
     } finally {
       await Effect.runPromise(ingress.close)
     }

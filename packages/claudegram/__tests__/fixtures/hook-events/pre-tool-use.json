@@ -1,0 +1,25 @@
+{
+  "session_id": "session-contract-pre-tool-use",
+  "transcript_path": "/tmp/claudegram-contract/transcript.jsonl",
+  "cwd": "/tmp/claudegram-contract",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "AskUserQuestion",
+  "tool_use_id": "tool-question-1",
+  "tool_input": {
+    "questions": [
+      {
+        "question": "Which deployment channel?",
+        "options": [
+          {
+            "label": "Stable",
+            "description": "Deploy the stable release"
+          },
+          {
+            "label": "Beta",
+            "description": "Deploy the beta release"
+          }
+        ]
+      }
+    ]
+  }
+}

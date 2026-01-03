@@ -1,0 +1,12 @@
+{
+  "session_id": "session-contract-post-tool-use-failure",
+  "transcript_path": "/tmp/claudegram-contract/transcript.jsonl",
+  "cwd": "/tmp/claudegram-contract",
+  "hook_event_name": "PostToolUseFailure",
+  "tool_name": "Bash",
+  "tool_use_id": "tool-bash-failure-1",
+  "tool_input": {
+    "command": "exit 1"
+  },
+  "error": "Command exited with status 1"
+}
