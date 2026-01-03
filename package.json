@@ -22,6 +22,7 @@
     "test": "vitest --config ./vitest.config.ts run",
     "test:unit": "vitest --config ./vitest.config.ts --project unit run",
     "test:integration": "vitest --config ./vitest.config.ts --project integration run",
+    "typecheck": "tsc -b tsconfig.src.json tsconfig.test.json --pretty false",
     "prepare": "is-ci || husky"
   },
   "devDependencies": {

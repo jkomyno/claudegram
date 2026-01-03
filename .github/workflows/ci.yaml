@@ -54,6 +54,9 @@ jobs:
         with:
           bun-version: ${{ matrix.bun }}
 
+      - name: "🔎 Typecheck"
+        run: pnpm typecheck
+
       - name: "🏗️ Build: Transpile TS to JS"
         run: pnpm build
 
