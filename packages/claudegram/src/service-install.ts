@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process'
+import { constants } from 'node:fs'
 import { access, mkdir, rename, unlink, writeFile } from 'node:fs/promises'
 import { homedir, platform } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 
 import * as Data from 'effect/Data'
 import * as Effect from 'effect/Effect'
@@ -17,6 +18,7 @@ export interface ServiceInstallOptions {
   readonly homeDirectory?: string
   readonly platform?: NodeJS.Platform
   readonly invocationCommand?: string
+  readonly tmuxExecutable?: string
   readonly executeCommands?: boolean
   readonly runCommand?: (
     executable: string,
@@ -74,6 +76,7 @@ const escapeXml = (value: string): string =>
 const launchdDefinition = (
   invocationCommand: string,
   logPath: string,
+  tmuxExecutable: string,
 ): string => `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -90,6 +93,11 @@ const launchdDefinition = (
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CLAUDEGRAM_TMUX_EXECUTABLE</key>
+    <string>${escapeXml(tmuxExecutable)}</string>
+  </dict>
   <key>StandardOutPath</key>
   <string>${escapeXml(logPath)}</string>
   <key>StandardErrorPath</key>
@@ -100,13 +108,17 @@ const launchdDefinition = (
 
 const systemdEscape = (value: string): string => value.replaceAll('%', '%%')
 
-const systemdDefinition = (invocationCommand: string): string => `[Unit]
+const systemdDefinition = (
+  invocationCommand: string,
+  tmuxExecutable: string,
+): string => `[Unit]
 Description=claudegram Telegram bridge
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
+Environment="CLAUDEGRAM_TMUX_EXECUTABLE=${systemdEscape(tmuxExecutable)}"
 ExecStart=/bin/sh -lc '${systemdEscape(invocationCommand.replaceAll("'", `'\\''`))}'
 Restart=on-failure
 RestartSec=2
@@ -133,6 +145,23 @@ const fileExists = async (path: string): Promise<boolean> => {
   } catch {
     return false
   }
+}
+
+const resolveTmuxExecutable = async (): Promise<string> => {
+  for (const directory of (process.env.PATH ?? '').split(delimiter)) {
+    if (directory.length === 0) continue
+    const candidate = join(directory, 'tmux')
+    try {
+      await access(candidate, constants.X_OK)
+      return candidate
+    } catch {
+      continue
+    }
+  }
+
+  throw new ServiceInstallError({
+    message: 'tmux is required before installing the auto-start service',
+  })
 }
 
 const writeAtomic = async (path: string, content: string): Promise<void> => {
@@ -234,10 +263,27 @@ export const installService = (
     const homeDirectory = options.homeDirectory ?? homedir()
     const servicePath = servicePathFor(servicePlatform, homeDirectory)
     const invocation = invocationForDaemon(options.invocationCommand)
+    const tmuxExecutable = yield* Effect.tryPromise({
+      try: () =>
+        options.tmuxExecutable === undefined
+          ? resolveTmuxExecutable()
+          : Promise.resolve(options.tmuxExecutable),
+      catch: (cause) =>
+        cause instanceof ServiceInstallError
+          ? cause
+          : new ServiceInstallError({
+              message: 'failed to resolve the tmux executable',
+              cause,
+            }),
+    })
     const definition =
       servicePlatform === 'darwin'
-        ? launchdDefinition(invocation, join(dirname(config.socketPath), 'daemon.log'))
-        : systemdDefinition(invocation)
+        ? launchdDefinition(
+            invocation,
+            join(dirname(config.socketPath), 'daemon.log'),
+            tmuxExecutable,
+          )
+        : systemdDefinition(invocation, tmuxExecutable)
     yield* Effect.tryPromise({
       try: () => writeAtomic(servicePath, definition),
       catch: (cause) =>
@@ -248,6 +294,12 @@ export const installService = (
       yield* Effect.tryPromise({
         try: async () => {
           if (servicePlatform === 'darwin') {
+            await runServiceAction(
+              'stop',
+              servicePlatform,
+              servicePath,
+              options.runCommand,
+            )
             await runServiceAction(
               'start',
               servicePlatform,

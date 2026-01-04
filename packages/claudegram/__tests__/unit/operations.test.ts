@@ -96,12 +96,16 @@ describe('operations', () => {
         homeDirectory: directory,
         platform: 'darwin',
         invocationCommand: "'/opt/claudegram' daemon",
+        tmuxExecutable: '/opt/tools/bin/tmux',
         executeCommands: false,
       }),
     )
-    expect(await readFile(launchd.servicePath, 'utf8')).toContain(
-      '<key>KeepAlive</key>',
+    const propertyList = await readFile(launchd.servicePath, 'utf8')
+    expect(propertyList).toContain('<key>KeepAlive</key>')
+    expect(propertyList).toContain(
+      '<key>CLAUDEGRAM_TMUX_EXECUTABLE</key>',
     )
+    expect(propertyList).toContain('<string>/opt/tools/bin/tmux</string>')
     expect(
       await Effect.runPromise(
         inspectService({ homeDirectory: directory, platform: 'darwin' }),
@@ -122,11 +126,15 @@ describe('operations', () => {
         homeDirectory: directory,
         platform: 'linux',
         invocationCommand: "'/opt/claudegram' daemon",
+        tmuxExecutable: '/opt/tools/bin/tmux',
         executeCommands: false,
       }),
     )
     const unit = await readFile(systemd.servicePath, 'utf8')
     expect(unit).toContain('Restart=on-failure')
+    expect(unit).toContain(
+      'Environment="CLAUDEGRAM_TMUX_EXECUTABLE=/opt/tools/bin/tmux"',
+    )
     expect(unit).toContain('WantedBy=default.target')
   })
 

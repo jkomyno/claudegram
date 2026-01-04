@@ -599,7 +599,13 @@ export const runDaemon = (
           }),
       )
 
-      const tmux = makeTmuxBridge()
+      const configuredTmuxExecutable =
+        process.env.CLAUDEGRAM_TMUX_EXECUTABLE
+      const tmux = makeTmuxBridge(
+        configuredTmuxExecutable === undefined
+          ? {}
+          : { executable: configuredTmuxExecutable },
+      )
       const snapshot = yield* loadDaemonSnapshot(paths.snapshotPath).pipe(
         Effect.flatMap((loaded) => restoreDaemonSnapshot(loaded, tmux)),
       )

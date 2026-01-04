@@ -354,6 +354,7 @@ describe('daemon lifecycle', () => {
         homeDirectory: directory,
         platform: 'darwin',
         invocationCommand: "'/opt/claudegram' daemon",
+        tmuxExecutable: '/opt/tools/bin/tmux',
         executeCommands: false,
       }),
     )
@@ -402,6 +403,38 @@ describe('daemon lifecycle', () => {
     expect(restartCalls.map(([, arguments_]) => arguments_[0])).toEqual([
       'print',
       'kickstart',
+    ])
+  })
+
+  it('reloads the launchd definition when installing over a loaded service', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'claudegram-service-'))
+    temporaryDirectories.push(directory)
+    const config = makeConfig(directory)
+    const calls: Array<ReadonlyArray<string>> = []
+    let loaded = true
+
+    await Effect.runPromise(
+      installService(config, {
+        homeDirectory: directory,
+        platform: 'darwin',
+        invocationCommand: "'/opt/claudegram' daemon",
+        tmuxExecutable: '/opt/tools/bin/tmux',
+        runCommand: async (_executable, arguments_) => {
+          calls.push(arguments_)
+          if (arguments_[0] === 'print' && !loaded) {
+            throw new Error('not loaded')
+          }
+          if (arguments_[0] === 'bootout') loaded = false
+          if (arguments_[0] === 'bootstrap') loaded = true
+        },
+      }),
+    )
+
+    expect(calls.map((arguments_) => arguments_[0])).toEqual([
+      'print',
+      'bootout',
+      'print',
+      'bootstrap',
     ])
   })
 })
