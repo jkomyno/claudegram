@@ -92,6 +92,10 @@ export interface NotifierService {
     callbackData: string,
     sessionId: string,
   ) => Effect.Effect<Option.Option<PendingTelegramAction>, NotifierError>
+  readonly retryCallback: (
+    callbackData: string,
+    action: PendingTelegramAction,
+  ) => Effect.Effect<void>
 }
 
 export class Notifier extends Context.Tag('@claudegram/Notifier')<
@@ -113,10 +117,7 @@ type Question =
   typeof AskUserQuestionEventSchema.Type['tool_input']['questions'][number]
 
 type PendingCallbackAction =
-  | Extract<
-      PendingTelegramAction,
-      { readonly type: 'permission' | 'await-reply' | 'abort' }
-    >
+  | PendingTelegramAction
   | {
       readonly type: 'question'
       readonly sessionId: string
@@ -605,6 +606,23 @@ export const makeNotifierWithOptions = (
       }).pipe(
         Effect.mapError(mapNotifierError('failed to resolve callback action')),
       ),
+    retryCallback: (callbackData, action) => {
+      const issuedAt = now()
+      return SynchronizedRef.update(pendingActions, (current) => {
+        const next = new Map<string, PendingCallback>()
+        for (const [token, pending] of current) {
+          if (pending.expiresAt > issuedAt.getTime()) {
+            next.set(token, pending)
+          }
+        }
+        next.set(callbackData, {
+          interactionId: randomUUID(),
+          expiresAt: issuedAt.getTime() + CALLBACK_TTL_MILLISECONDS,
+          action,
+        })
+        return next
+      })
+    },
   })
 })
 

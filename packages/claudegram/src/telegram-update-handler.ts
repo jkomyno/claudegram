@@ -162,7 +162,11 @@ export const handleTelegramUpdate = (
       return
     }
 
-    yield* applyAction(session.value, action.value)
+    yield* applyAction(session.value, action.value).pipe(
+      Effect.tapError(() =>
+        notifier.retryCallback(callback.data ?? '', action.value),
+      ),
+    )
     yield* api.answerCallbackQuery(callback.id, callbackAnswer(action.value))
   }).pipe(
     Effect.mapError(mapUpdateError(`failed to handle Telegram update ${update.update_id}`)),

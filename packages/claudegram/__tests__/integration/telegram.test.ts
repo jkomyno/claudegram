@@ -561,6 +561,86 @@ describe('Telegram bridge', () => {
     ).toBe(true)
   })
 
+  it('keeps a permission callback retryable when tmux delivery fails', async () => {
+    const fake = await startFakeTelegram()
+    const { api, notifier, registry, topics } = await makeTestServices(fake)
+    const sessionId = 'session-permission-retry'
+
+    await Effect.runPromise(
+      notifier.notify(
+        eventEnvelope(sessionId, { hook_event_name: 'SessionStart' }),
+      ),
+    )
+    await Effect.runPromise(
+      notifier.notify(
+        eventEnvelope(sessionId, {
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_input: { command: 'touch /tmp/permission-review' },
+        }),
+      ),
+    )
+
+    const permissionCall = fake.calls.find(
+      (call) => call.method === 'sendMessage',
+    )
+    const threadId = permissionCall?.body.message_thread_id as number
+    const markup = permissionCall?.body.reply_markup as {
+      readonly inline_keyboard: ReadonlyArray<
+        ReadonlyArray<{ readonly callback_data: string }>
+      >
+    }
+    const allowCallback =
+      markup.inline_keyboard[0]?.[0]?.callback_data ?? ''
+    const attempts: Array<string> = []
+    const tmux = TmuxBridge.of({
+      hasPane: () => Effect.succeed(true),
+      sendText: (_session, text) =>
+        Effect.suspend(() => {
+          attempts.push(text)
+          return attempts.length === 1
+            ? Effect.fail(new Error('tmux unavailable'))
+            : Effect.void
+        }),
+      interrupt: () => Effect.void,
+    })
+    const runCallback = (updateId: number) =>
+      Effect.runPromise(
+        handleTelegramUpdate({
+          update_id: updateId,
+          callback_query: {
+            id: `callback-${updateId}`,
+            from: { id: 424242, is_bot: false, first_name: 'Alberto' },
+            data: allowCallback,
+            message: {
+              message_id: updateId,
+              message_thread_id: threadId,
+              chat: { id: -100123, type: 'supergroup', is_forum: true },
+            },
+          },
+        }).pipe(
+          Effect.provideService(Config, config),
+          Effect.provideService(Notifier, notifier),
+          Effect.provideService(SessionRegistry, registry),
+          Effect.provideService(TelegramApi, api),
+          Effect.provideService(TmuxBridge, tmux),
+          Effect.provideService(TopicManager, topics),
+        ),
+      )
+
+    await expect(runCallback(1)).rejects.toThrow(
+      'failed to handle Telegram update 1',
+    )
+    await runCallback(2)
+
+    expect(attempts).toEqual(['y', 'y'])
+    expect(
+      fake.calls
+        .filter((call) => call.method === 'answerCallbackQuery')
+        .map((call) => call.body.text),
+    ).toEqual(['Sent to Claude.'])
+  })
+
   it('asks multiple questions in order and submits one combined reply', async () => {
     const fake = await startFakeTelegram()
     const { api, notifier, registry, topics } = await makeTestServices(fake)

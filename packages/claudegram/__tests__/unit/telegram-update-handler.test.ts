@@ -114,6 +114,7 @@ describe('handleTelegramUpdate', () => {
         }),
       resolveCallback: (data) =>
         Effect.succeed(Option.fromNullable(callbackActions.get(data))),
+      retryCallback: () => Effect.void,
     })
     const callbackAnswers: Array<Readonly<Record<string, unknown>>> = []
     const api = TelegramApi.of({
