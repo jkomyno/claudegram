@@ -267,7 +267,7 @@ describe('Telegram bridge', () => {
       notifier.notify(
         eventEnvelope(firstSession, {
           hook_event_name: 'Stop',
-          last_assistant_message: 'The implementation is ready.',
+          last_assistant_message: 'The implementation **is ready**.',
         }),
       ),
     )
@@ -381,13 +381,16 @@ describe('Telegram bridge', () => {
     expect(createCalls[1]?.body.name).toBe('linux-host · session-two')
     expect(sendCalls).toHaveLength(6)
     expect(sendCalls.map((call) => call.body.text)).toEqual([
-      'Claude\nThe implementation is ready.',
+      '<b>Claude</b>\nThe implementation <b>is ready</b>.',
       '🛠️ Bash: pnpm test',
       '🔔 Claude needs attention.',
       '🧹 Claude is compacting this session.',
       '🔐 Permission requested\nBash: git status',
       '❓ Which release channel?',
     ])
+    expect(sendCalls[0]?.body.parse_mode).toBe('HTML')
+    expect(sendCalls.slice(1).every((call) => call.body.parse_mode === undefined))
+      .toBe(true)
     expect(deleteCalls).toHaveLength(1)
 
     const permissionMarkup = sendCalls[4]?.body.reply_markup as {

@@ -14,7 +14,12 @@ import { SessionRegistry } from './session-registry'
 import {
   type InlineKeyboardMarkup,
   TelegramApi,
+  type TelegramParseMode,
 } from './telegram-api'
+import {
+  renderMarkdownAsTelegramHtml,
+  TELEGRAM_MESSAGE_TEXT_LIMIT,
+} from './telegram-markdown'
 import { ToolMuteRules } from './tool-mute-rules'
 import { TopicManager } from './topic-manager'
 
@@ -110,6 +115,7 @@ export class NotifierError extends Data.TaggedError('NotifierError')<{
 
 interface OutboundNotification {
   readonly text: string
+  readonly parseMode?: TelegramParseMode
   readonly replyMarkup?: InlineKeyboardMarkup
 }
 
@@ -143,6 +149,8 @@ export interface NotifierOptions {
 }
 
 const CALLBACK_TTL_MILLISECONDS = 15 * 60 * 1000
+const ASSISTANT_MESSAGE_MAXIMUM_LENGTH =
+  TELEGRAM_MESSAGE_TEXT_LIMIT - 'Claude\n'.length
 
 const truncate = (value: string, maximum: number): string => {
   const characters = Array.from(value)
@@ -416,7 +424,11 @@ export const makeNotifierWithOptions = (
         return Effect.succeed(
           decodeOption(AssistantEventSchema, event).pipe(
             Option.map(({ last_assistant_message }) => ({
-              text: `Claude\n${truncate(last_assistant_message, 4000)}`,
+              text: `<b>Claude</b>\n${renderMarkdownAsTelegramHtml(
+                last_assistant_message,
+                ASSISTANT_MESSAGE_MAXIMUM_LENGTH,
+              )}`,
+              parseMode: 'HTML' as const,
             })),
           ),
         )
@@ -492,6 +504,9 @@ export const makeNotifierWithOptions = (
           chatId,
           messageThreadId: topic.threadId,
           text: notification.value.text,
+          ...(notification.value.parseMode === undefined
+            ? {}
+            : { parseMode: notification.value.parseMode }),
           ...(notification.value.replyMarkup === undefined
             ? {}
             : { replyMarkup: notification.value.replyMarkup }),

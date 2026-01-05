@@ -5,6 +5,7 @@ export default defineConfig({
   dts: true,
   entry: ['./src/index.ts'],
   format: ['esm', 'cjs'],
+  noExternal: ['marked'],
   outDir: 'build',
   sourcemap: true,
   tsconfig: './tsconfig.build.json',

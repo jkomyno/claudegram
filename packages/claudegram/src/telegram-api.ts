@@ -83,10 +83,13 @@ export interface GetUpdatesOptions {
   readonly timeout?: number
 }
 
+export type TelegramParseMode = 'HTML' | 'Markdown' | 'MarkdownV2'
+
 export interface SendMessageOptions {
   readonly chatId: number
   readonly messageThreadId?: number
   readonly text: string
+  readonly parseMode?: TelegramParseMode
   readonly replyMarkup?: InlineKeyboardMarkup
   readonly disableNotification?: boolean
 }
@@ -245,6 +248,9 @@ export const makeTelegramApi = (
           {
             chat_id: messageOptions.chatId,
             text: messageOptions.text,
+            ...(messageOptions.parseMode === undefined
+              ? {}
+              : { parse_mode: messageOptions.parseMode }),
             ...(messageOptions.messageThreadId === undefined
               ? {}
               : { message_thread_id: messageOptions.messageThreadId }),

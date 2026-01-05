@@ -37,6 +37,7 @@
   },
   "dependencies": {
     "effect": "3.19.13",
-    "@effect/platform": "0.94.0"
+    "@effect/platform": "0.94.0",
+    "marked": "18.0.7"
   }
 }
