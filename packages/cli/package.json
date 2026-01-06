@@ -35,7 +35,7 @@
     "clean": "rimraf build .turbo",
     "build": "pnpm run build:js && pnpm run build:binary",
     "build:js": "tsdown --config ./tsdown.config.mts",
-    "build:binary": "bun build ./src/bin.ts --compile --outfile ./build/claudegram",
+    "build:binary": "bun run ./scripts/build-binary.ts",
     "build:watch": "pnpm build --watch",
     "check:exports": "attw --pack .",
     "test": "vitest --config ../../vitest.config.ts run",
