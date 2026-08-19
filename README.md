@@ -4,6 +4,8 @@ claudegram connects Claude Code sessions to Telegram forum topics. From Telegram
 
 This is a personal project, not affiliated with Anthropic or Telegram.
 
+![Screenshot of claudegram in action](docs/images/screen-1.png)
+
 ## How it works
 
 Claude Code hooks send session events to a daemon on the same machine. The daemon creates one Telegram topic for each session, then posts assistant replies, tool summaries, notifications, and compaction notices to that topic.
