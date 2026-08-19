@@ -5,7 +5,7 @@ claudegram connects Claude Code sessions to Telegram forum topics. From Telegram
 This is a personal project, not affiliated with Anthropic or Telegram.
 
 <p align="center">
-  <img src="docs/images/screen-1.png" alt="Screenshot of claudegram in action" />
+  <img src="docs/images/screen-1.png" alt="Screenshot of claudegram in action" width="900" />
 </p>
 
 ## How it works
